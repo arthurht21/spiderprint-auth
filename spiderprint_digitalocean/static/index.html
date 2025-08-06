@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpiderPrint - Dashboard Administrativo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 30px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        }
+
+        .header h1 {
+            color: #00BFFF;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 1.1em;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 25px;
+            text-align: center;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .stat-number {
+            font-size: 3em;
+            font-weight: bold;
+            color: #00BFFF;
+            margin-bottom: 10px;
+        }
+
+        .stat-label {
+            font-size: 1.1em;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+        }
+
+        .panel {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        }
+
+        .panel h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+        }
+
+        .user-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .user-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px;
+            border-bottom: 1px solid #eee;
+            transition: background-color 0.3s ease;
+        }
+
+        .user-item:hover {
+            background-color: #f8f9fa;
+        }
+
+        .user-info {
+            flex: 1;
+        }
+
+        .user-name {
+            font-weight: bold;
+            color: #333;
+        }
+
+        .user-email {
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        .user-status {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            font-weight: bold;
+        }
+
+        .status-online {
+            background-color: #00FF7F;
+            color: white;
+        }
+
+        .status-offline {
+            background-color: #ccc;
+            color: #666;
+        }
+
+        .status-inactive {
+            background-color: #FF4444;
+            color: white;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background-color: #00BFFF;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background-color: #0099CC;
+        }
+
+        .btn-danger {
+            background-color: #FF4444;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background-color: #CC3333;
+        }
+
+        .btn-success {
+            background-color: #00FF7F;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background-color: #00CC66;
+        }
+
+        .log-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .log-item {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+            font-size: 0.9em;
+        }
+
+        .log-success {
+            border-left: 4px solid #00FF7F;
+        }
+
+        .log-error {
+            border-left: 4px solid #FF4444;
+        }
+
+        .log-time {
+            color: #666;
+            font-size: 0.8em;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 1em;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-content {
+            background-color: white;
+            margin: 15% auto;
+            padding: 20px;
+            border-radius: 15px;
+            width: 80%;
+            max-width: 500px;
+        }
+
+        .close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .close:hover {
+            color: black;
+        }
+
+        .license-info {
+            font-size: 0.8em;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .license-status {
+            padding: 2px 6px;
+            border-radius: 8px;
+            font-size: 0.7em;
+            font-weight: bold;
+            margin-left: 5px;
+        }
+
+        .license-active {
+            background-color: #00FF7F;
+            color: white;
+        }
+
+        .license-expiring {
+            background-color: #FFA500;
+            color: white;
+        }
+
+        .license-expired {
+            background-color: #FF4444;
+            color: white;
+        }
+
+        .license-none {
+            background-color: #ccc;
+            color: #666;
+        }
+
+        .btn-warning {
+            background-color: #FFA500;
+            color: white;
+        }
+
+        .btn-warning:hover {
+            background-color: #FF8C00;
+        }
+
+        .license-form {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-top: 10px;
+        }
+
+        .license-form input {
+            width: 80px;
+            padding: 5px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+
+        .license-form select {
+            padding: 5px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+            
+            .stats-grid {
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🕷️ SpiderPrint</h1>
+            <p>Dashboard Administrativo - Sistema de Autenticação</p>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-number" id="totalUsers">-</div>
+                <div class="stat-label">Total de Usuários</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="activeUsers">-</div>
+                <div class="stat-label">Usuários Ativos</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="onlineUsers">-</div>
+                <div class="stat-label">Online Agora</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="todayLogins">-</div>
+                <div class="stat-label">Logins Hoje</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="activeLicenses">-</div>
+                <div class="stat-label">Licenças Ativas</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="expiringSoon">-</div>
+                <div class="stat-label">Expirando em 7 dias</div>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="panel">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2>👥 Usuários</h2>
+                    <button class="btn btn-success" onclick="showCreateUserModal()">+ Novo Usuário</button>
+                </div>
+                <div class="user-list" id="userList">
+                    <!-- Usuários serão carregados aqui -->
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>📊 Logs de Acesso</h2>
+                <div class="log-list" id="logList">
+                    <!-- Logs serão carregados aqui -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal para criar usuário -->
+    <div id="createUserModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeCreateUserModal()">&times;</span>
+            <h2>Criar Novo Usuário</h2>
+            <form id="createUserForm">
+                <div class="form-group">
+                    <label for="username">Usuário:</label>
+                    <input type="text" id="username" name="username" required>
+                </div>
+                <div class="form-group">
+                    <label for="email">Email:</label>
+                    <input type="email" id="email" name="email" required>
+                </div>
+                <div class="form-group">
+                    <label for="password">Senha:</label>
+                    <input type="password" id="password" name="password" required>
+                </div>
+                <div class="form-group">
+                    <label for="licenseDays">Duração da Licença (dias):</label>
+                    <input type="number" id="licenseDays" name="licenseDays" value="30" min="1" required>
+                </div>
+                <div class="form-group">
+                    <label for="licenseType">Tipo de Licença:</label>
+                    <select id="licenseType" name="licenseType">
+                        <option value="trial">Trial</option>
+                        <option value="monthly">Mensal</option>
+                        <option value="yearly">Anual</option>
+                        <option value="lifetime">Vitalícia</option>
+                    </select>
+                </div>
+                <div style="text-align: right;">
+                    <button type="button" class="btn" onclick="closeCreateUserModal()">Cancelar</button>
+                    <button type="submit" class="btn btn-primary">Criar Usuário</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Modal para gerenciar licença -->
+    <div id="manageLicenseModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeManageLicenseModal()">&times;</span>
+            <h2>Gerenciar Licença</h2>
+            <div id="licenseUserInfo" style="margin-bottom: 20px; padding: 10px; background-color: #f8f9fa; border-radius: 8px;">
+                <!-- Informações do usuário serão carregadas aqui -->
+            </div>
+            <form id="manageLicenseForm">
+                <input type="hidden" id="licenseUserId" name="userId">
+                <div class="form-group">
+                    <label for="newLicenseDays">Nova Duração (dias):</label>
+                    <input type="number" id="newLicenseDays" name="days" min="1" required>
+                </div>
+                <div class="form-group">
+                    <label for="newLicenseType">Tipo de Licença:</label>
+                    <select id="newLicenseType" name="licenseType">
+                        <option value="trial">Trial</option>
+                        <option value="monthly">Mensal</option>
+                        <option value="yearly">Anual</option>
+                        <option value="lifetime">Vitalícia</option>
+                    </select>
+                </div>
+                <div style="text-align: right;">
+                    <button type="button" class="btn" onclick="closeManageLicenseModal()">Cancelar</button>
+                    <button type="button" class="btn btn-warning" onclick="extendLicense()">Estender Licença</button>
+                    <button type="submit" class="btn btn-primary">Definir Nova Licença</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        // Carregar dados ao inicializar
+        document.addEventListener('DOMContentLoaded', function() {
+            loadStats();
+            loadUsers();
+            loadLogs();
+            
+            // Atualizar dados a cada 30 segundos
+            setInterval(() => {
+                loadStats();
+                loadUsers();
+                loadLogs();
+            }, 30000);
+        });
+
+        async function loadStats() {
+            try {
+                // Carregar estatísticas gerais
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+                
+                document.getElementById('totalUsers').textContent = data.total_users || 0;
+                document.getElementById('activeUsers').textContent = data.active_users || 0;
+                document.getElementById('onlineUsers').textContent = data.online_users || 0;
+                document.getElementById('todayLogins').textContent = data.successful_logins_today || 0;
+                
+                // Carregar estatísticas de licenças
+                const licenseResponse = await fetch('/api/licenses/stats');
+                const licenseData = await licenseResponse.json();
+                
+                document.getElementById('activeLicenses').textContent = licenseData.active_licenses || 0;
+                document.getElementById('expiringSoon').textContent = licenseData.expiring_soon || 0;
+                
+            } catch (error) {
+                console.error('Erro ao carregar estatísticas:', error);
+            }
+        }
+
+        async function loadUsers() {
+            try {
+                const response = await fetch('/api/users');
+                const users = await response.json();
+                
+                const userList = document.getElementById('userList');
+                userList.innerHTML = '';
+                
+                users.forEach(user => {
+                    const userItem = document.createElement('div');
+                    userItem.className = 'user-item';
+                    
+                    let statusBadge = '';
+                    if (!user.is_active) {
+                        statusBadge = '<span class="status-badge status-inactive">Inativo</span>';
+                    } else if (user.hardware_id) {
+                        statusBadge = '<span class="status-badge status-online">Online</span>';
+                    } else {
+                        statusBadge = '<span class="status-badge status-offline">Offline</span>';
+                    }
+                    
+                    // Informações de licença
+                    let licenseInfo = '';
+                    let licenseStatusClass = '';
+                    let licenseText = '';
+                    
+                    if (user.license_status === 'active') {
+                        licenseStatusClass = 'license-active';
+                        licenseText = `Ativa (${user.license_days_remaining} dias)`;
+                    } else if (user.license_status === 'expiring_soon') {
+                        licenseStatusClass = 'license-expiring';
+                        licenseText = `Expirando (${user.license_days_remaining} dias)`;
+                    } else if (user.license_status === 'expired') {
+                        licenseStatusClass = 'license-expired';
+                        licenseText = 'Expirada';
+                    } else {
+                        licenseStatusClass = 'license-none';
+                        licenseText = 'Sem licença';
+                    }
+                    
+                    licenseInfo = `
+                        <div class="license-info">
+                            Licença: <span class="license-status ${licenseStatusClass}">${licenseText}</span>
+                            ${user.license_expires_at ? `<br>Expira: ${new Date(user.license_expires_at).toLocaleDateString('pt-BR')}` : ''}
+                        </div>
+                    `;
+                    
+                    userItem.innerHTML = `
+                        <div class="user-info">
+                            <div class="user-name">${user.username}</div>
+                            <div class="user-email">${user.email}</div>
+                            ${licenseInfo}
+                        </div>
+                        <div class="user-status">
+                            ${statusBadge}
+                            <button class="btn btn-warning" onclick="showManageLicenseModal(${user.id})">Licença</button>
+                            <button class="btn btn-primary" onclick="disconnectUser(${user.id})">Desconectar</button>
+                            <button class="btn btn-danger" onclick="deleteUser(${user.id})">Excluir</button>
+                        </div>
+                    `;
+                    
+                    userList.appendChild(userItem);
+                });
+            } catch (error) {
+                console.error('Erro ao carregar usuários:', error);
+            }
+        }
+
+        async function loadLogs() {
+            try {
+                const response = await fetch('/api/logs?per_page=20');
+                const data = await response.json();
+                
+                const logList = document.getElementById('logList');
+                logList.innerHTML = '';
+                
+                data.logs.forEach(log => {
+                    const logItem = document.createElement('div');
+                    logItem.className = `log-item ${log.success ? 'log-success' : 'log-error'}`;
+                    
+                    const date = new Date(log.timestamp).toLocaleString('pt-BR');
+                    
+                    logItem.innerHTML = `
+                        <div><strong>${log.username}</strong> - ${log.message}</div>
+                        <div class="log-time">${date} | Hardware: ${log.hardware_id.substring(0, 8)}...</div>
+                    `;
+                    
+                    logList.appendChild(logItem);
+                });
+            } catch (error) {
+                console.error('Erro ao carregar logs:', error);
+            }
+        }
+
+        function showCreateUserModal() {
+            document.getElementById('createUserModal').style.display = 'block';
+        }
+
+        function closeCreateUserModal() {
+            document.getElementById('createUserModal').style.display = 'none';
+            document.getElementById('createUserForm').reset();
+        }
+
+        document.getElementById('createUserForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData(e.target);
+            const userData = {
+                username: formData.get('username'),
+                email: formData.get('email'),
+                password: formData.get('password')
+            };
+            
+            try {
+                const response = await fetch('/api/users', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(userData)
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert('Usuário criado com sucesso!');
+                    closeCreateUserModal();
+                    loadUsers();
+                    loadStats();
+                } else {
+                    alert('Erro ao criar usuário: ' + result.message);
+                }
+            } catch (error) {
+                alert('Erro ao criar usuário: ' + error.message);
+            }
+        });
+
+        async function disconnectUser(userId) {
+            if (confirm('Desconectar este usuário?')) {
+                try {
+                    const response = await fetch(`/api/users/${userId}/disconnect`, {
+                        method: 'POST'
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        alert('Usuário desconectado com sucesso!');
+                        loadUsers();
+                        loadStats();
+                    } else {
+                        alert('Erro ao desconectar usuário: ' + result.message);
+                    }
+                } catch (error) {
+                    alert('Erro ao desconectar usuário: ' + error.message);
+                }
+            }
+        }
+
+        async function deleteUser(userId) {
+            if (confirm('Tem certeza que deseja excluir este usuário? Esta ação não pode ser desfeita.')) {
+                try {
+                    const response = await fetch(`/api/users/${userId}`, {
+                        method: 'DELETE'
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        alert('Usuário excluído com sucesso!');
+                        loadUsers();
+                        loadStats();
+                    } else {
+                        alert('Erro ao excluir usuário: ' + result.message);
+                    }
+                } catch (error) {
+                    alert('Erro ao excluir usuário: ' + error.message);
+                }
+            }
+        }
+
+        // Funções de gerenciamento de licenças
+        async function showManageLicenseModal(userId) {
+            try {
+                const response = await fetch(`/api/users/${userId}`);
+                const user = await response.json();
+                
+                document.getElementById('licenseUserId').value = userId;
+                document.getElementById('newLicenseDays').value = user.license_duration_days || 30;
+                document.getElementById('newLicenseType').value = user.license_type || 'trial';
+                
+                // Mostrar informações do usuário
+                const userInfo = document.getElementById('licenseUserInfo');
+                let licenseStatusText = '';
+                if (user.license_status === 'active') {
+                    licenseStatusText = `<span style="color: green;">✅ Ativa (${user.license_days_remaining} dias restantes)</span>`;
+                } else if (user.license_status === 'expiring_soon') {
+                    licenseStatusText = `<span style="color: orange;">⚠️ Expirando em ${user.license_days_remaining} dias</span>`;
+                } else if (user.license_status === 'expired') {
+                    licenseStatusText = `<span style="color: red;">❌ Expirada</span>`;
+                } else {
+                    licenseStatusText = `<span style="color: gray;">❓ Sem licença</span>`;
+                }
+                
+                userInfo.innerHTML = `
+                    <strong>Usuário:</strong> ${user.username} (${user.email})<br>
+                    <strong>Status da Licença:</strong> ${licenseStatusText}<br>
+                    ${user.license_expires_at ? `<strong>Data de Expiração:</strong> ${new Date(user.license_expires_at).toLocaleDateString('pt-BR')}` : ''}
+                `;
+                
+                document.getElementById('manageLicenseModal').style.display = 'block';
+            } catch (error) {
+                alert('Erro ao carregar dados do usuário: ' + error.message);
+            }
+        }
+
+        function closeManageLicenseModal() {
+            document.getElementById('manageLicenseModal').style.display = 'none';
+        }
+
+        async function extendLicense() {
+            const userId = document.getElementById('licenseUserId').value;
+            const days = document.getElementById('newLicenseDays').value;
+            
+            if (!days || days <= 0) {
+                alert('Por favor, insira um número válido de dias.');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/users/${userId}/license/extend`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ days: parseInt(days) })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert(`Licença estendida por ${days} dias com sucesso!`);
+                    closeManageLicenseModal();
+                    loadUsers();
+                    loadStats();
+                } else {
+                    alert('Erro ao estender licença: ' + result.message);
+                }
+            } catch (error) {
+                alert('Erro ao estender licença: ' + error.message);
+            }
+        }
+
+        // Atualizar criação de usuário para incluir licença
+        document.getElementById('createUserForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData(e.target);
+            const userData = {
+                username: formData.get('username'),
+                email: formData.get('email'),
+                password: formData.get('password'),
+                license_duration_days: parseInt(formData.get('licenseDays')),
+                license_type: formData.get('licenseType')
+            };
+            
+            try {
+                const response = await fetch('/api/users', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(userData)
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert('Usuário criado com sucesso!');
+                    closeCreateUserModal();
+                    loadUsers();
+                    loadStats();
+                    e.target.reset();
+                } else {
+                    alert('Erro ao criar usuário: ' + result.message);
+                }
+            } catch (error) {
+                alert('Erro ao criar usuário: ' + error.message);
+            }
+        });
+
+        // Gerenciar licença form
+        document.getElementById('manageLicenseForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const userId = document.getElementById('licenseUserId').value;
+            const days = document.getElementById('newLicenseDays').value;
+            const licenseType = document.getElementById('newLicenseType').value;
+            
+            try {
+                const response = await fetch(`/api/users/${userId}/license`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        duration_days: parseInt(days),
+                        license_type: licenseType
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert('Licença atualizada com sucesso!');
+                    closeManageLicenseModal();
+                    loadUsers();
+                    loadStats();
+                } else {
+                    alert('Erro ao atualizar licença: ' + result.message);
+                }
+            } catch (error) {
+                alert('Erro ao atualizar licença: ' + error.message);
+            }
+        });
+
+        // Fechar modal ao clicar fora dele
+        window.onclick = function(event) {
+            const createModal = document.getElementById('createUserModal');
+            const licenseModal = document.getElementById('manageLicenseModal');
+            
+            if (event.target == createModal) {
+                closeCreateUserModal();
+            }
+            if (event.target == licenseModal) {
+                closeManageLicenseModal();
+            }
+        }
+    </script>
+</body>
+</html>
