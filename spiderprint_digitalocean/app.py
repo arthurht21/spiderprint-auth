@@ -306,7 +306,7 @@ def dashboard():
         }
         
         .log-item {
-            padding: 10px;
+            padding: 12px;
             border-bottom: 1px solid #eee;
             font-size: 0.9em;
         }
@@ -319,6 +319,24 @@ def dashboard():
         .log-action {
             color: #333;
             margin-left: 10px;
+        }
+        
+        .log-hardware {
+            color: #667eea;
+            font-size: 0.8em;
+            margin-top: 5px;
+            font-family: monospace;
+        }
+        
+        .hardware-id {
+            color: #667eea;
+            font-family: monospace;
+            font-size: 0.8em;
+            background: #f8f9fa;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-top: 3px;
+            display: inline-block;
         }
         
         @media (max-width: 768px) {
@@ -347,7 +365,7 @@ def dashboard():
     <div class="container">
         <div class="header">
             <h1>🕷️ SpiderPrint</h1>
-            <p>Dashboard Administrativo - Sistema de Autenticação</p>
+            <p>Dashboard Administrativo - Sistema de Autenticação com Vinculação de Hardware</p>
         </div>
         
         <div class="stats-grid">
@@ -582,12 +600,17 @@ def dashboard():
                             const toggleText = user.is_active ? 'Desativar' : 'Ativar';
                             const toggleClass = user.is_active ? 'btn-warning' : 'btn-success';
                             
+                            const hardwareDisplay = user.hardware_id ? 
+                                `<div class="hardware-id">🔗 Hardware: ${user.hardware_id.substring(0, 16)}...</div>` : 
+                                '<div class="hardware-id">🔗 Hardware: Não vinculado</div>';
+                            
                             return `
                                 <div class="user-item">
                                     <div class="user-info">
                                         <h4>${user.username} <span class="${statusClass}">(${statusText})</span></h4>
                                         <p>${user.email} - ${user.license_type}</p>
                                         <p>Expira: ${user.expires_at ? new Date(user.expires_at).toLocaleDateString('pt-BR') : 'Nunca'}</p>
+                                        ${hardwareDisplay}
                                     </div>
                                     <div class="user-actions">
                                         <button class="btn btn-sm" onclick="openUserModal(${user.id})">✏️ Editar</button>
@@ -613,12 +636,18 @@ def dashboard():
                 .then(logs => {
                     const logsList = document.getElementById('logsList');
                     if (Array.isArray(logs) && logs.length > 0) {
-                        logsList.innerHTML = logs.map(log => `
-                            <div class="log-item">
-                                <span class="log-time">${new Date(log.timestamp).toLocaleString('pt-BR')}</span>
-                                <span class="log-action">${log.username} - ${log.action}</span>
-                            </div>
-                        `).join('');
+                        logsList.innerHTML = logs.map(log => {
+                            const hardwareDisplay = log.hardware_id ? 
+                                `<div class="log-hardware">🔗 Hardware: ${log.hardware_id.substring(0, 16)}...</div>` : '';
+                            
+                            return `
+                                <div class="log-item">
+                                    <span class="log-time">${new Date(log.timestamp).toLocaleString('pt-BR')}</span>
+                                    <span class="log-action">${log.username} - ${log.action}</span>
+                                    ${hardwareDisplay}
+                                </div>
+                            `;
+                        }).join('');
                     } else {
                         logsList.innerHTML = '<p style="text-align: center; color: #666; padding: 20px;">Nenhum log disponível</p>';
                     }
@@ -744,7 +773,7 @@ def get_users():
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, username, email, created_at, expires_at, license_type, is_active, last_login
+            SELECT id, username, email, created_at, expires_at, license_type, is_active, last_login, hardware_id
             FROM users
             ORDER BY created_at DESC
         """)
@@ -759,7 +788,8 @@ def get_users():
                 'expires_at': row[4],
                 'license_type': row[5],
                 'is_active': row[6],
-                'last_login': row[7]
+                'last_login': row[7],
+                'hardware_id': row[8]
             })
         
         conn.close()
@@ -775,7 +805,7 @@ def get_user(user_id):
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, username, email, created_at, expires_at, license_type, is_active, last_login
+            SELECT id, username, email, created_at, expires_at, license_type, is_active, last_login, hardware_id
             FROM users
             WHERE id = ?
         """, (user_id,))
@@ -793,7 +823,8 @@ def get_user(user_id):
             'expires_at': row[4],
             'license_type': row[5],
             'is_active': row[6],
-            'last_login': row[7]
+            'last_login': row[7],
+            'hardware_id': row[8]
         }
         
         conn.close()
@@ -1017,7 +1048,7 @@ def delete_user(user_id):
 
 @app.route('/api/logs')
 def get_logs():
-    """Logs de acesso"""
+    """Logs de acesso com hardware_id"""
     try:
         per_page = request.args.get('per_page', 50, type=int)
         
@@ -1025,7 +1056,7 @@ def get_logs():
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT username, action, timestamp, ip_address
+            SELECT username, action, timestamp, ip_address, hardware_id
             FROM access_logs
             ORDER BY timestamp DESC
             LIMIT ?
@@ -1037,7 +1068,8 @@ def get_logs():
                 'username': row[0],
                 'action': row[1],
                 'timestamp': row[2],
-                'ip_address': row[3]
+                'ip_address': row[3],
+                'hardware_id': row[4]
             })
         
         conn.close()
@@ -1116,14 +1148,14 @@ def login():
                 conn.close()
                 return jsonify({'error': 'Licença expirada'}), 401
         
-        # Atualizar último login
+        # Atualizar último login e hardware_id
         cursor.execute("""
             UPDATE users 
             SET last_login = datetime('now'), hardware_id = ?
             WHERE id = ?
         """, (hardware_id, user[0]))
         
-        # Log de acesso
+        # Log de acesso com hardware_id
         cursor.execute("""
             INSERT INTO access_logs (username, action, ip_address, hardware_id)
             VALUES (?, 'login', ?, ?)
