@@ -165,6 +165,7 @@ def dashboard():
             cursor: pointer;
             font-size: 14px;
             transition: background 0.3s ease;
+            margin-right: 10px;
         }
         
         .btn:hover {
@@ -177,6 +178,28 @@ def dashboard():
         
         .btn-success:hover {
             background: #218838;
+        }
+        
+        .btn-warning {
+            background: #ffc107;
+            color: #212529;
+        }
+        
+        .btn-warning:hover {
+            background: #e0a800;
+        }
+        
+        .btn-danger {
+            background: #dc3545;
+        }
+        
+        .btn-danger:hover {
+            background: #c82333;
+        }
+        
+        .btn-sm {
+            padding: 8px 16px;
+            font-size: 12px;
         }
         
         .modal {
@@ -262,6 +285,21 @@ def dashboard():
             font-size: 0.9em;
         }
         
+        .user-actions {
+            display: flex;
+            gap: 5px;
+        }
+        
+        .status-active {
+            color: #28a745;
+            font-weight: bold;
+        }
+        
+        .status-inactive {
+            color: #dc3545;
+            font-weight: bold;
+        }
+        
         .logs-list {
             max-height: 400px;
             overflow-y: auto;
@@ -290,6 +328,17 @@ def dashboard():
             
             .stats-grid {
                 grid-template-columns: repeat(2, 1fr);
+            }
+            
+            .user-item {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 10px;
+            }
+            
+            .user-actions {
+                width: 100%;
+                justify-content: flex-end;
             }
         }
     </style>
@@ -350,8 +399,9 @@ def dashboard():
     <div id="userModal" class="modal">
         <div class="modal-content">
             <span class="close" onclick="closeUserModal()">&times;</span>
-            <h2>Criar Novo Usuário</h2>
+            <h2 id="userModalTitle">Criar Novo Usuário</h2>
             <form id="userForm">
+                <input type="hidden" id="userId" name="userId">
                 <div class="form-group">
                     <label for="username">Usuário:</label>
                     <input type="text" id="username" name="username" required>
@@ -362,7 +412,8 @@ def dashboard():
                 </div>
                 <div class="form-group">
                     <label for="password">Senha:</label>
-                    <input type="password" id="password" name="password" required>
+                    <input type="password" id="password" name="password">
+                    <small id="passwordHelp" style="color: #666; font-size: 12px;">Deixe em branco para manter a senha atual (apenas na edição)</small>
                 </div>
                 <div class="form-group">
                     <label for="duration">Duração da Licença (dias):</label>
@@ -379,21 +430,123 @@ def dashboard():
                 </div>
                 <div style="text-align: right; margin-top: 30px;">
                     <button type="button" class="btn" onclick="closeUserModal()">Cancelar</button>
-                    <button type="submit" class="btn btn-success">Criar Usuário</button>
+                    <button type="submit" class="btn btn-success" id="userSubmitBtn">Criar Usuário</button>
                 </div>
             </form>
         </div>
     </div>
     
     <script>
+        let editingUserId = null;
+        
         // Funções do Modal
-        function openUserModal() {
-            document.getElementById('userModal').style.display = 'block';
+        function openUserModal(userId = null) {
+            editingUserId = userId;
+            const modal = document.getElementById('userModal');
+            const title = document.getElementById('userModalTitle');
+            const submitBtn = document.getElementById('userSubmitBtn');
+            const passwordHelp = document.getElementById('passwordHelp');
+            const passwordField = document.getElementById('password');
+            
+            if (userId) {
+                // Modo edição
+                title.textContent = 'Editar Usuário';
+                submitBtn.textContent = 'Salvar Alterações';
+                passwordHelp.style.display = 'block';
+                passwordField.required = false;
+                
+                // Carregar dados do usuário
+                loadUserForEdit(userId);
+            } else {
+                // Modo criação
+                title.textContent = 'Criar Novo Usuário';
+                submitBtn.textContent = 'Criar Usuário';
+                passwordHelp.style.display = 'none';
+                passwordField.required = true;
+                document.getElementById('userForm').reset();
+            }
+            
+            modal.style.display = 'block';
         }
         
         function closeUserModal() {
             document.getElementById('userModal').style.display = 'none';
             document.getElementById('userForm').reset();
+            editingUserId = null;
+        }
+        
+        function loadUserForEdit(userId) {
+            fetch(`/api/users/${userId}`)
+                .then(response => response.json())
+                .then(user => {
+                    document.getElementById('userId').value = user.id;
+                    document.getElementById('username').value = user.username;
+                    document.getElementById('email').value = user.email;
+                    document.getElementById('licenseType').value = user.license_type;
+                    
+                    // Calcular duração restante
+                    if (user.expires_at) {
+                        const expiresAt = new Date(user.expires_at);
+                        const now = new Date();
+                        const daysRemaining = Math.ceil((expiresAt - now) / (1000 * 60 * 60 * 24));
+                        document.getElementById('duration').value = Math.max(1, daysRemaining);
+                    } else {
+                        document.getElementById('duration').value = 365; // Vitalícia
+                    }
+                })
+                .catch(error => {
+                    console.error('Erro ao carregar usuário:', error);
+                    alert('Erro ao carregar dados do usuário');
+                });
+        }
+        
+        function toggleUserStatus(userId, currentStatus) {
+            const action = currentStatus ? 'desativar' : 'ativar';
+            const newStatus = !currentStatus;
+            
+            if (confirm(`Tem certeza que deseja ${action} este usuário?`)) {
+                fetch(`/api/users/${userId}/status`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ is_active: newStatus })
+                })
+                .then(response => {
+                    if (response.ok) {
+                        alert(`Usuário ${action}do com sucesso!`);
+                        loadUsers();
+                        loadStats();
+                    } else {
+                        throw new Error(`Erro ao ${action} usuário`);
+                    }
+                })
+                .catch(error => {
+                    console.error('Erro:', error);
+                    alert(`Erro ao ${action} usuário: ` + error.message);
+                });
+            }
+        }
+        
+        function deleteUser(userId, username) {
+            if (confirm(`Tem certeza que deseja EXCLUIR permanentemente o usuário "${username}"?\\n\\nEsta ação não pode ser desfeita!`)) {
+                fetch(`/api/users/${userId}`, {
+                    method: 'DELETE'
+                })
+                .then(response => {
+                    if (response.ok) {
+                        alert('Usuário excluído com sucesso!');
+                        loadUsers();
+                        loadStats();
+                    } else {
+                        throw new Error('Erro ao excluir usuário');
+                    }
+                })
+                .catch(error => {
+                    console.error('Erro:', error);
+                    alert('Erro ao excluir usuário: ' + error.message);
+                });
+            }
         }
         
         // Fechar modal clicando fora
@@ -423,15 +576,27 @@ def dashboard():
                 .then(users => {
                     const userList = document.getElementById('userList');
                     if (Array.isArray(users) && users.length > 0) {
-                        userList.innerHTML = users.map(user => `
-                            <div class="user-item">
-                                <div class="user-info">
-                                    <h4>${user.username}</h4>
-                                    <p>${user.email} - ${user.license_type}</p>
-                                    <p>Expira: ${user.expires_at ? new Date(user.expires_at).toLocaleDateString('pt-BR') : 'Nunca'}</p>
+                        userList.innerHTML = users.map(user => {
+                            const statusClass = user.is_active ? 'status-active' : 'status-inactive';
+                            const statusText = user.is_active ? 'Ativo' : 'Inativo';
+                            const toggleText = user.is_active ? 'Desativar' : 'Ativar';
+                            const toggleClass = user.is_active ? 'btn-warning' : 'btn-success';
+                            
+                            return `
+                                <div class="user-item">
+                                    <div class="user-info">
+                                        <h4>${user.username} <span class="${statusClass}">(${statusText})</span></h4>
+                                        <p>${user.email} - ${user.license_type}</p>
+                                        <p>Expira: ${user.expires_at ? new Date(user.expires_at).toLocaleDateString('pt-BR') : 'Nunca'}</p>
+                                    </div>
+                                    <div class="user-actions">
+                                        <button class="btn btn-sm" onclick="openUserModal(${user.id})">✏️ Editar</button>
+                                        <button class="btn btn-sm ${toggleClass}" onclick="toggleUserStatus(${user.id}, ${user.is_active})">${toggleText}</button>
+                                        <button class="btn btn-sm btn-danger" onclick="deleteUser(${user.id}, '${user.username}')">🗑️ Excluir</button>
+                                    </div>
                                 </div>
-                            </div>
-                        `).join('');
+                            `;
+                        }).join('');
                     } else {
                         userList.innerHTML = '<p style="text-align: center; color: #666; padding: 20px;">Nenhum usuário cadastrado</p>';
                     }
@@ -474,7 +639,7 @@ def dashboard():
                 .catch(error => console.error('Erro ao carregar estatísticas de licenças:', error));
         }
         
-        // Criar usuário
+        // Criar/Editar usuário
         document.getElementById('userForm').addEventListener('submit', function(e) {
             e.preventDefault();
             
@@ -482,13 +647,22 @@ def dashboard():
             const userData = {
                 username: formData.get('username'),
                 email: formData.get('email'),
-                password: formData.get('password'),
                 duration: parseInt(formData.get('duration')),
                 license_type: formData.get('licenseType')
             };
             
-            fetch('/api/users', {
-                method: 'POST',
+            // Adicionar senha apenas se foi preenchida
+            const password = formData.get('password');
+            if (password) {
+                userData.password = password;
+            }
+            
+            const isEditing = editingUserId !== null;
+            const url = isEditing ? `/api/users/${editingUserId}` : '/api/users';
+            const method = isEditing ? 'PUT' : 'POST';
+            
+            fetch(url, {
+                method: method,
                 headers: {
                     'Content-Type': 'application/json',
                 },
@@ -498,18 +672,18 @@ def dashboard():
                 if (response.ok) {
                     return response.json();
                 } else {
-                    throw new Error('Erro ao criar usuário');
+                    throw new Error(isEditing ? 'Erro ao editar usuário' : 'Erro ao criar usuário');
                 }
             })
             .then(data => {
-                alert('Usuário criado com sucesso!');
+                alert(isEditing ? 'Usuário editado com sucesso!' : 'Usuário criado com sucesso!');
                 closeUserModal();
                 loadUsers();
                 loadStats();
             })
             .catch(error => {
                 console.error('Erro:', error);
-                alert('Erro ao criar usuário: ' + error.message);
+                alert((isEditing ? 'Erro ao editar usuário: ' : 'Erro ao criar usuário: ') + error.message);
             });
         });
         
@@ -593,6 +767,40 @@ def get_users():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/users/<int:user_id>', methods=['GET'])
+def get_user(user_id):
+    """Obter dados de um usuário específico"""
+    try:
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, username, email, created_at, expires_at, license_type, is_active, last_login
+            FROM users
+            WHERE id = ?
+        """, (user_id,))
+        
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({'error': 'Usuário não encontrado'}), 404
+        
+        user = {
+            'id': row[0],
+            'username': row[1],
+            'email': row[2],
+            'created_at': row[3],
+            'expires_at': row[4],
+            'license_type': row[5],
+            'is_active': row[6],
+            'last_login': row[7]
+        }
+        
+        conn.close()
+        return jsonify(user)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/users', methods=['POST'])
 def create_user():
     """Criar novo usuário"""
@@ -652,6 +860,157 @@ def create_user():
             'license_type': license_type,
             'message': 'Usuário criado com sucesso'
         }), 201
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro interno: {str(e)}'}), 500
+
+@app.route('/api/users/<int:user_id>', methods=['PUT'])
+def update_user(user_id):
+    """Editar usuário existente"""
+    try:
+        data = request.get_json()
+        
+        # Validar dados obrigatórios
+        if not data or not all(k in data for k in ('username', 'email')):
+            return jsonify({'error': 'Dados obrigatórios: username, email'}), 400
+        
+        username = data['username'].strip()
+        email = data['email'].strip()
+        password = data.get('password', '').strip()
+        duration = data.get('duration', 30)
+        license_type = data.get('license_type', 'Trial')
+        
+        # Validações básicas
+        if len(username) < 3:
+            return jsonify({'error': 'Username deve ter pelo menos 3 caracteres'}), 400
+        
+        if password and len(password) < 6:
+            return jsonify({'error': 'Senha deve ter pelo menos 6 caracteres'}), 400
+        
+        if '@' not in email:
+            return jsonify({'error': 'Email inválido'}), 400
+        
+        # Calcular data de expiração
+        expires_at = None
+        if license_type != 'Vitalícia' and duration > 0:
+            expires_at = (datetime.datetime.now() + datetime.timedelta(days=duration)).isoformat()
+        
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        
+        # Verificar se usuário existe
+        cursor.execute("SELECT id FROM users WHERE id = ?", (user_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({'error': 'Usuário não encontrado'}), 404
+        
+        # Verificar se username/email já existe em outro usuário
+        cursor.execute("SELECT id FROM users WHERE (username = ? OR email = ?) AND id != ?", (username, email, user_id))
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({'error': 'Usuário ou email já existe'}), 400
+        
+        # Atualizar usuário
+        if password:
+            # Atualizar com nova senha
+            password_hash = hash_password(password)
+            cursor.execute("""
+                UPDATE users 
+                SET username = ?, email = ?, password_hash = ?, expires_at = ?, license_type = ?
+                WHERE id = ?
+            """, (username, email, password_hash, expires_at, license_type, user_id))
+        else:
+            # Atualizar sem alterar senha
+            cursor.execute("""
+                UPDATE users 
+                SET username = ?, email = ?, expires_at = ?, license_type = ?
+                WHERE id = ?
+            """, (username, email, expires_at, license_type, user_id))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'id': user_id,
+            'username': username,
+            'email': email,
+            'expires_at': expires_at,
+            'license_type': license_type,
+            'message': 'Usuário atualizado com sucesso'
+        })
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro interno: {str(e)}'}), 500
+
+@app.route('/api/users/<int:user_id>/status', methods=['PUT'])
+def update_user_status(user_id):
+    """Ativar/Desativar usuário"""
+    try:
+        data = request.get_json()
+        
+        if not data or 'is_active' not in data:
+            return jsonify({'error': 'Campo obrigatório: is_active'}), 400
+        
+        is_active = bool(data['is_active'])
+        
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        
+        # Verificar se usuário existe
+        cursor.execute("SELECT username FROM users WHERE id = ?", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            conn.close()
+            return jsonify({'error': 'Usuário não encontrado'}), 404
+        
+        # Atualizar status
+        cursor.execute("UPDATE users SET is_active = ? WHERE id = ?", (is_active, user_id))
+        
+        # Log da ação
+        action = 'ativado' if is_active else 'desativado'
+        cursor.execute("""
+            INSERT INTO access_logs (username, action, ip_address)
+            VALUES (?, ?, ?)
+        """, (user[0], f'usuário {action}', request.remote_addr))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'message': f'Usuário {action} com sucesso',
+            'is_active': is_active
+        })
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro interno: {str(e)}'}), 500
+
+@app.route('/api/users/<int:user_id>', methods=['DELETE'])
+def delete_user(user_id):
+    """Excluir usuário"""
+    try:
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        
+        # Verificar se usuário existe
+        cursor.execute("SELECT username FROM users WHERE id = ?", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            conn.close()
+            return jsonify({'error': 'Usuário não encontrado'}), 404
+        
+        # Excluir usuário
+        cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        
+        # Log da ação
+        cursor.execute("""
+            INSERT INTO access_logs (username, action, ip_address)
+            VALUES (?, ?, ?)
+        """, (user[0], 'usuário excluído', request.remote_addr))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'message': 'Usuário excluído com sucesso'})
         
     except Exception as e:
         return jsonify({'error': f'Erro interno: {str(e)}'}), 500
