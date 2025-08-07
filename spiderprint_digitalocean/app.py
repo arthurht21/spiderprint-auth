@@ -1,16 +1,24 @@
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for
 from flask_cors import CORS
 import sqlite3
 import hashlib
 import datetime
 import os
 import json
+import secrets
 
 app = Flask(__name__)
 CORS(app)
 
+# Configuração de sessão
+app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
+
 # Configuração do banco de dados
 DATABASE = 'spiderprint.db'
+
+# Credenciais de administrador (pode ser alterado via variáveis de ambiente)
+ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'admin')
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'spiderprint2024')
 
 def init_db():
     """Inicializa o banco de dados"""
@@ -27,6 +35,7 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             expires_at TIMESTAMP,
             license_type TEXT DEFAULT 'Trial',
+            access_level TEXT DEFAULT 'Básico',
             is_active BOOLEAN DEFAULT 1,
             last_login TIMESTAMP,
             hardware_id TEXT
@@ -52,9 +61,274 @@ def hash_password(password):
     """Hash da senha"""
     return hashlib.sha256(password.encode()).hexdigest()
 
+def require_admin_login():
+    """Verifica se o admin está logado"""
+    return session.get('admin_logged_in') == True
+
 @app.route('/')
+def index():
+    """Página inicial - redireciona para login ou dashboard"""
+    if require_admin_login():
+        return dashboard()
+    else:
+        return admin_login()
+
+@app.route('/admin/login')
+def admin_login():
+    """Página de login do administrador"""
+    html = '''
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpiderPrint - Login Administrativo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        
+        .login-container {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 40px;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            width: 100%;
+            max-width: 400px;
+            text-align: center;
+        }
+        
+        .logo {
+            font-size: 3em;
+            margin-bottom: 10px;
+        }
+        
+        .title {
+            color: #333;
+            font-size: 2em;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+            text-align: left;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
+        }
+        
+        .form-group input {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #e1e5e9;
+            border-radius: 12px;
+            font-size: 16px;
+            transition: border-color 0.3s ease;
+        }
+        
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .btn {
+            width: 100%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            margin-top: 10px;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+        }
+        
+        .error-message {
+            background: #fee;
+            color: #c33;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border: 1px solid #fcc;
+        }
+        
+        .info-box {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            font-size: 0.9em;
+            color: #666;
+        }
+        
+        .security-note {
+            margin-top: 20px;
+            font-size: 0.8em;
+            color: #999;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="logo">🕷️</div>
+        <h1 class="title">SpiderPrint</h1>
+        <p class="subtitle">Dashboard Administrativo</p>
+        
+        <div id="errorMessage" class="error-message" style="display: none;"></div>
+        
+        <form id="loginForm">
+            <div class="form-group">
+                <label for="username">Usuário Administrador:</label>
+                <input type="text" id="username" name="username" required autocomplete="username">
+            </div>
+            
+            <div class="form-group">
+                <label for="password">Senha:</label>
+                <input type="password" id="password" name="password" required autocomplete="current-password">
+            </div>
+            
+            <button type="submit" class="btn">🔐 Entrar no Dashboard</button>
+        </form>
+        
+        <div class="info-box">
+            <strong>🛡️ Área Restrita</strong><br>
+            Acesso exclusivo para administradores do sistema SpiderPrint.
+        </div>
+        
+        <div class="security-note">
+            🔒 Conexão segura • Dados protegidos
+        </div>
+    </div>
+    
+    <script>
+        document.getElementById('loginForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const errorDiv = document.getElementById('errorMessage');
+            
+            if (!username || !password) {
+                showError('Por favor, preencha todos os campos.');
+                return;
+            }
+            
+            // Fazer login
+            fetch('/admin/authenticate', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    username: username,
+                    password: password
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    window.location.href = '/dashboard';
+                } else {
+                    showError(data.error || 'Credenciais inválidas');
+                }
+            })
+            .catch(error => {
+                console.error('Erro:', error);
+                showError('Erro de conexão. Tente novamente.');
+            });
+        });
+        
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            
+            // Esconder após 5 segundos
+            setTimeout(() => {
+                errorDiv.style.display = 'none';
+            }, 5000);
+        }
+        
+        // Focus no campo usuário
+        document.getElementById('username').focus();
+    </script>
+</body>
+</html>
+    '''
+    return html
+
+@app.route('/admin/authenticate', methods=['POST'])
+def admin_authenticate():
+    """Autentica o administrador"""
+    try:
+        data = request.get_json()
+        username = data.get('username', '').strip()
+        password = data.get('password', '').strip()
+        
+        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+            session['admin_logged_in'] = True
+            session['admin_username'] = username
+            
+            # Log da ação
+            conn = sqlite3.connect(DATABASE)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO access_logs (username, action, ip_address)
+                VALUES (?, ?, ?)
+            """, (f"admin:{username}", 'login administrativo', request.remote_addr))
+            conn.commit()
+            conn.close()
+            
+            return jsonify({'success': True})
+        else:
+            return jsonify({'success': False, 'error': 'Credenciais inválidas'})
+            
+    except Exception as e:
+        return jsonify({'success': False, 'error': 'Erro interno'}), 500
+
+@app.route('/admin/logout')
+def admin_logout():
+    """Logout do administrador"""
+    session.clear()
+    return redirect(url_for('admin_login'))
+
+@app.route('/dashboard')
 def dashboard():
-    """Dashboard administrativo"""
+    """Dashboard administrativo (protegido)"""
+    if not require_admin_login():
+        return redirect(url_for('admin_login'))
+    
     html = '''
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -87,18 +361,48 @@ def dashboard():
             border-radius: 15px;
             margin-bottom: 30px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
         
-        .header h1 {
+        .header-left h1 {
             color: #333;
             display: flex;
             align-items: center;
             gap: 10px;
         }
         
-        .header p {
+        .header-left p {
             color: #666;
             margin-top: 5px;
+        }
+        
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .admin-info {
+            text-align: right;
+            color: #666;
+            font-size: 0.9em;
+        }
+        
+        .logout-btn {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.3s ease;
+        }
+        
+        .logout-btn:hover {
+            background: #c82333;
         }
         
         .stats-grid {
@@ -300,6 +604,30 @@ def dashboard():
             font-weight: bold;
         }
         
+        .access-level {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            font-weight: bold;
+            margin-left: 8px;
+        }
+        
+        .access-basico {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+        
+        .access-avancado {
+            background: #fff3e0;
+            color: #f57c00;
+        }
+        
+        .access-completo {
+            background: #e8f5e8;
+            color: #388e3c;
+        }
+        
         .logs-list {
             max-height: 400px;
             overflow-y: auto;
@@ -358,14 +686,29 @@ def dashboard():
                 width: 100%;
                 justify-content: flex-end;
             }
+            
+            .header {
+                flex-direction: column;
+                gap: 15px;
+                text-align: center;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🕷️ SpiderPrint</h1>
-            <p>Dashboard Administrativo - Sistema de Autenticação com Vinculação de Hardware</p>
+            <div class="header-left">
+                <h1>🕷️ SpiderPrint</h1>
+                <p>Dashboard Administrativo - Sistema de Autenticação com Níveis de Acesso</p>
+            </div>
+            <div class="header-right">
+                <div class="admin-info">
+                    <div>👤 Administrador</div>
+                    <div>🔐 Sessão Segura</div>
+                </div>
+                <button class="logout-btn" onclick="logout()">🚪 Sair</button>
+            </div>
         </div>
         
         <div class="stats-grid">
@@ -378,20 +721,20 @@ def dashboard():
                 <div class="stat-label">Usuários Ativos</div>
             </div>
             <div class="stat-card">
-                <div class="stat-number" id="onlineUsers">0</div>
-                <div class="stat-label">Online Agora</div>
+                <div class="stat-number" id="basicUsers">0</div>
+                <div class="stat-label">Nível Básico</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="advancedUsers">0</div>
+                <div class="stat-label">Nível Avançado</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="completeUsers">0</div>
+                <div class="stat-label">Nível Completo</div>
             </div>
             <div class="stat-card">
                 <div class="stat-number" id="todayLogins">0</div>
                 <div class="stat-label">Logins Hoje</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number" id="activeLicenses">-</div>
-                <div class="stat-label">Licenças Ativas</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number" id="expiringLicenses">-</div>
-                <div class="stat-label">Expirando em 7 dias</div>
             </div>
         </div>
         
@@ -446,6 +789,14 @@ def dashboard():
                         <option value="Vitalícia">Vitalícia</option>
                     </select>
                 </div>
+                <div class="form-group">
+                    <label for="accessLevel">Nível de Acesso:</label>
+                    <select id="accessLevel" name="accessLevel">
+                        <option value="Básico">🔵 Básico - Funcionalidades essenciais</option>
+                        <option value="Avançado">🟠 Avançado - Básico + recursos avançados</option>
+                        <option value="Completo">🟢 Completo - Acesso total</option>
+                    </select>
+                </div>
                 <div style="text-align: right; margin-top: 30px;">
                     <button type="button" class="btn" onclick="closeUserModal()">Cancelar</button>
                     <button type="submit" class="btn btn-success" id="userSubmitBtn">Criar Usuário</button>
@@ -456,6 +807,13 @@ def dashboard():
     
     <script>
         let editingUserId = null;
+        
+        // Logout
+        function logout() {
+            if (confirm('Tem certeza que deseja sair do dashboard?')) {
+                window.location.href = '/admin/logout';
+            }
+        }
         
         // Funções do Modal
         function openUserModal(userId = null) {
@@ -501,6 +859,7 @@ def dashboard():
                     document.getElementById('username').value = user.username;
                     document.getElementById('email').value = user.email;
                     document.getElementById('licenseType').value = user.license_type;
+                    document.getElementById('accessLevel').value = user.access_level || 'Básico';
                     
                     // Calcular duração restante
                     if (user.expires_at) {
@@ -582,7 +941,9 @@ def dashboard():
                 .then(data => {
                     document.getElementById('totalUsers').textContent = data.total_users || 0;
                     document.getElementById('activeUsers').textContent = data.active_users || 0;
-                    document.getElementById('onlineUsers').textContent = data.online_users || 0;
+                    document.getElementById('basicUsers').textContent = data.basic_users || 0;
+                    document.getElementById('advancedUsers').textContent = data.advanced_users || 0;
+                    document.getElementById('completeUsers').textContent = data.complete_users || 0;
                     document.getElementById('todayLogins').textContent = data.today_logins || 0;
                 })
                 .catch(error => console.error('Erro ao carregar estatísticas:', error));
@@ -600,6 +961,9 @@ def dashboard():
                             const toggleText = user.is_active ? 'Desativar' : 'Ativar';
                             const toggleClass = user.is_active ? 'btn-warning' : 'btn-success';
                             
+                            const accessLevel = user.access_level || 'Básico';
+                            const accessClass = `access-${accessLevel.toLowerCase()}`;
+                            
                             const hardwareDisplay = user.hardware_id ? 
                                 `<div class="hardware-id">🔗 Hardware: ${user.hardware_id.substring(0, 16)}...</div>` : 
                                 '<div class="hardware-id">🔗 Hardware: Não vinculado</div>';
@@ -607,7 +971,7 @@ def dashboard():
                             return `
                                 <div class="user-item">
                                     <div class="user-info">
-                                        <h4>${user.username} <span class="${statusClass}">(${statusText})</span></h4>
+                                        <h4>${user.username} <span class="${statusClass}">(${statusText})</span><span class="access-level ${accessClass}">${accessLevel}</span></h4>
                                         <p>${user.email} - ${user.license_type}</p>
                                         <p>Expira: ${user.expires_at ? new Date(user.expires_at).toLocaleDateString('pt-BR') : 'Nunca'}</p>
                                         ${hardwareDisplay}
@@ -658,16 +1022,6 @@ def dashboard():
                 });
         }
         
-        function loadLicenseStats() {
-            fetch('/api/licenses/stats')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('activeLicenses').textContent = data.active_licenses || 0;
-                    document.getElementById('expiringLicenses').textContent = data.expiring_soon || 0;
-                })
-                .catch(error => console.error('Erro ao carregar estatísticas de licenças:', error));
-        }
-        
         // Criar/Editar usuário
         document.getElementById('userForm').addEventListener('submit', function(e) {
             e.preventDefault();
@@ -677,7 +1031,8 @@ def dashboard():
                 username: formData.get('username'),
                 email: formData.get('email'),
                 duration: parseInt(formData.get('duration')),
-                license_type: formData.get('licenseType')
+                license_type: formData.get('licenseType'),
+                access_level: formData.get('accessLevel')
             };
             
             // Adicionar senha apenas se foi preenchida
@@ -720,15 +1075,13 @@ def dashboard():
         loadStats();
         loadUsers();
         loadLogs();
-        loadLicenseStats();
         
-        // Atualizar dados a cada 5 segundos
+        // Atualizar dados a cada 10 segundos
         setInterval(() => {
             loadStats();
             loadUsers();
             loadLogs();
-            loadLicenseStats();
-        }, 5000);
+        }, 10000);
     </script>
 </body>
 </html>
@@ -738,6 +1091,9 @@ def dashboard():
 @app.route('/api/stats')
 def get_stats():
     """Estatísticas do sistema"""
+    if not require_admin_login():
+        return jsonify({'error': 'Acesso negado'}), 401
+    
     try:
         conn = sqlite3.connect(DATABASE)
         cursor = conn.cursor()
@@ -747,8 +1103,18 @@ def get_stats():
         total_users = cursor.fetchone()[0]
         
         # Usuários ativos (não expirados)
-        cursor.execute("SELECT COUNT(*) FROM users WHERE expires_at > datetime('now') OR expires_at IS NULL")
+        cursor.execute("SELECT COUNT(*) FROM users WHERE (expires_at > datetime('now') OR expires_at IS NULL) AND is_active = 1")
         active_users = cursor.fetchone()[0]
+        
+        # Usuários por nível de acesso
+        cursor.execute("SELECT COUNT(*) FROM users WHERE access_level = 'Básico'")
+        basic_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM users WHERE access_level = 'Avançado'")
+        advanced_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM users WHERE access_level = 'Completo'")
+        complete_users = cursor.fetchone()[0]
         
         # Logins hoje
         cursor.execute("SELECT COUNT(*) FROM access_logs WHERE date(timestamp) = date('now') AND action = 'login'")
@@ -759,7 +1125,9 @@ def get_stats():
         return jsonify({
             'total_users': total_users,
             'active_users': active_users,
-            'online_users': 0,  # Implementar se necessário
+            'basic_users': basic_users,
+            'advanced_users': advanced_users,
+            'complete_users': complete_users,
             'today_logins': today_logins
         })
     except Exception as e:
@@ -768,12 +1136,15 @@ def get_stats():
 @app.route('/api/users', methods=['GET'])
 def get_users():
     """Listar usuários"""
+    if not require_admin_login():
+        return jsonify({'error': 'Acesso negado'}), 401
+    
     try:
         conn = sqlite3.connect(DATABASE)
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, username, email, created_at, expires_at, license_type, is_active, last_login, hardware_id
+            SELECT id, username, email, created_at, expires_at, license_type, access_level, is_active, last_login, hardware_id
             FROM users
             ORDER BY created_at DESC
         """)
@@ -787,9 +1158,10 @@ def get_users():
                 'created_at': row[3],
                 'expires_at': row[4],
                 'license_type': row[5],
-                'is_active': row[6],
-                'last_login': row[7],
-                'hardware_id': row[8]
+                'access_level': row[6] or 'Básico',
+                'is_active': row[7],
+                'last_login': row[8],
+                'hardware_id': row[9]
             })
         
         conn.close()
@@ -800,12 +1172,15 @@ def get_users():
 @app.route('/api/users/<int:user_id>', methods=['GET'])
 def get_user(user_id):
     """Obter dados de um usuário específico"""
+    if not require_admin_login():
+        return jsonify({'error': 'Acesso negado'}), 401
+    
     try:
         conn = sqlite3.connect(DATABASE)
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, username, email, created_at, expires_at, license_type, is_active, last_login, hardware_id
+            SELECT id, username, email, created_at, expires_at, license_type, access_level, is_active, last_login, hardware_id
             FROM users
             WHERE id = ?
         """, (user_id,))
@@ -822,9 +1197,10 @@ def get_user(user_id):
             'created_at': row[3],
             'expires_at': row[4],
             'license_type': row[5],
-            'is_active': row[6],
-            'last_login': row[7],
-            'hardware_id': row[8]
+            'access_level': row[6] or 'Básico',
+            'is_active': row[7],
+            'last_login': row[8],
+            'hardware_id': row[9]
         }
         
         conn.close()
@@ -835,6 +1211,9 @@ def get_user(user_id):
 @app.route('/api/users', methods=['POST'])
 def create_user():
     """Criar novo usuário"""
+    if not require_admin_login():
+        return jsonify({'error': 'Acesso negado'}), 401
+    
     try:
         data = request.get_json()
         
@@ -847,6 +1226,7 @@ def create_user():
         password = data['password']
         duration = data.get('duration', 30)
         license_type = data.get('license_type', 'Trial')
+        access_level = data.get('access_level', 'Básico')
         
         # Validações básicas
         if len(username) < 3:
@@ -857,6 +1237,9 @@ def create_user():
         
         if '@' not in email:
             return jsonify({'error': 'Email inválido'}), 400
+        
+        if access_level not in ['Básico', 'Avançado', 'Completo']:
+            access_level = 'Básico'
         
         # Calcular data de expiração
         expires_at = None
@@ -875,9 +1258,9 @@ def create_user():
         # Criar usuário
         password_hash = hash_password(password)
         cursor.execute("""
-            INSERT INTO users (username, email, password_hash, expires_at, license_type)
-            VALUES (?, ?, ?, ?, ?)
-        """, (username, email, password_hash, expires_at, license_type))
+            INSERT INTO users (username, email, password_hash, expires_at, license_type, access_level)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (username, email, password_hash, expires_at, license_type, access_level))
         
         user_id = cursor.lastrowid
         conn.commit()
@@ -889,6 +1272,7 @@ def create_user():
             'email': email,
             'expires_at': expires_at,
             'license_type': license_type,
+            'access_level': access_level,
             'message': 'Usuário criado com sucesso'
         }), 201
         
@@ -898,6 +1282,9 @@ def create_user():
 @app.route('/api/users/<int:user_id>', methods=['PUT'])
 def update_user(user_id):
     """Editar usuário existente"""
+    if not require_admin_login():
+        return jsonify({'error': 'Acesso negado'}), 401
+    
     try:
         data = request.get_json()
         
@@ -910,6 +1297,7 @@ def update_user(user_id):
         password = data.get('password', '').strip()
         duration = data.get('duration', 30)
         license_type = data.get('license_type', 'Trial')
+        access_level = data.get('access_level', 'Básico')
         
         # Validações básicas
         if len(username) < 3:
@@ -920,6 +1308,9 @@ def update_user(user_id):
         
         if '@' not in email:
             return jsonify({'error': 'Email inválido'}), 400
+        
+        if access_level not in ['Básico', 'Avançado', 'Completo']:
+            access_level = 'Básico'
         
         # Calcular data de expiração
         expires_at = None
@@ -947,16 +1338,16 @@ def update_user(user_id):
             password_hash = hash_password(password)
             cursor.execute("""
                 UPDATE users 
-                SET username = ?, email = ?, password_hash = ?, expires_at = ?, license_type = ?
+                SET username = ?, email = ?, password_hash = ?, expires_at = ?, license_type = ?, access_level = ?
                 WHERE id = ?
-            """, (username, email, password_hash, expires_at, license_type, user_id))
+            """, (username, email, password_hash, expires_at, license_type, access_level, user_id))
         else:
             # Atualizar sem alterar senha
             cursor.execute("""
                 UPDATE users 
-                SET username = ?, email = ?, expires_at = ?, license_type = ?
+                SET username = ?, email = ?, expires_at = ?, license_type = ?, access_level = ?
                 WHERE id = ?
-            """, (username, email, expires_at, license_type, user_id))
+            """, (username, email, expires_at, license_type, access_level, user_id))
         
         conn.commit()
         conn.close()
@@ -967,6 +1358,7 @@ def update_user(user_id):
             'email': email,
             'expires_at': expires_at,
             'license_type': license_type,
+            'access_level': access_level,
             'message': 'Usuário atualizado com sucesso'
         })
         
@@ -976,6 +1368,9 @@ def update_user(user_id):
 @app.route('/api/users/<int:user_id>/status', methods=['PUT'])
 def update_user_status(user_id):
     """Ativar/Desativar usuário"""
+    if not require_admin_login():
+        return jsonify({'error': 'Acesso negado'}), 401
+    
     try:
         data = request.get_json()
         
@@ -1002,7 +1397,7 @@ def update_user_status(user_id):
         cursor.execute("""
             INSERT INTO access_logs (username, action, ip_address)
             VALUES (?, ?, ?)
-        """, (user[0], f'usuário {action}', request.remote_addr))
+        """, (f"admin:{session.get('admin_username', 'admin')}", f'usuário {user[0]} {action}', request.remote_addr))
         
         conn.commit()
         conn.close()
@@ -1018,6 +1413,9 @@ def update_user_status(user_id):
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
 def delete_user(user_id):
     """Excluir usuário"""
+    if not require_admin_login():
+        return jsonify({'error': 'Acesso negado'}), 401
+    
     try:
         conn = sqlite3.connect(DATABASE)
         cursor = conn.cursor()
@@ -1036,7 +1434,7 @@ def delete_user(user_id):
         cursor.execute("""
             INSERT INTO access_logs (username, action, ip_address)
             VALUES (?, ?, ?)
-        """, (user[0], 'usuário excluído', request.remote_addr))
+        """, (f"admin:{session.get('admin_username', 'admin')}", f'usuário {user[0]} excluído', request.remote_addr))
         
         conn.commit()
         conn.close()
@@ -1049,6 +1447,9 @@ def delete_user(user_id):
 @app.route('/api/logs')
 def get_logs():
     """Logs de acesso com hardware_id"""
+    if not require_admin_login():
+        return jsonify({'error': 'Acesso negado'}), 401
+    
     try:
         per_page = request.args.get('per_page', 50, type=int)
         
@@ -1077,33 +1478,6 @@ def get_logs():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/licenses/stats')
-def get_license_stats():
-    """Estatísticas de licenças"""
-    try:
-        conn = sqlite3.connect(DATABASE)
-        cursor = conn.cursor()
-        
-        # Licenças ativas
-        cursor.execute("SELECT COUNT(*) FROM users WHERE expires_at > datetime('now') OR expires_at IS NULL")
-        active_licenses = cursor.fetchone()[0]
-        
-        # Expirando em 7 dias
-        cursor.execute("""
-            SELECT COUNT(*) FROM users 
-            WHERE expires_at BETWEEN datetime('now') AND datetime('now', '+7 days')
-        """)
-        expiring_soon = cursor.fetchone()[0]
-        
-        conn.close()
-        
-        return jsonify({
-            'active_licenses': active_licenses,
-            'expiring_soon': expiring_soon
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     """Autenticação de usuário"""
@@ -1121,7 +1495,7 @@ def login():
         
         # Buscar usuário
         cursor.execute("""
-            SELECT id, username, password_hash, expires_at, is_active
+            SELECT id, username, password_hash, expires_at, is_active, access_level
             FROM users
             WHERE username = ?
         """, (username,))
@@ -1168,7 +1542,8 @@ def login():
             'success': True,
             'message': 'Login realizado com sucesso',
             'username': username,
-            'expires_at': user[3]
+            'expires_at': user[3],
+            'access_level': user[5] or 'Básico'
         })
         
     except Exception as e:
@@ -1183,8 +1558,10 @@ if __name__ == '__main__':
     
     init_db()
     print("SpiderPrint Auth Server iniciado!")
-    print("Dashboard: http://localhost:5000")
+    print(f"Dashboard: http://localhost:5000")
+    print(f"Admin Login: {ADMIN_USERNAME} / {ADMIN_PASSWORD}")
     
     # Configuração para produção
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
+
