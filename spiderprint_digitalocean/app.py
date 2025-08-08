@@ -713,7 +713,7 @@ def dashboard():
                 <div class="table-container">
                     <div class="table-header">
                         <h3>👥 Gerenciar Usuários</h3>
-                        <button class="btn btn-success" onclick="openUserModal()">+ Novo Usuário</button>
+                        <button class="btn btn-success" onclick="openUserModal()" id="newUserBtn">+ Novo Usuário</button>
                     </div>
                     <div style="padding: 15px;">
                         <div class="search-filter">
@@ -744,6 +744,7 @@ def dashboard():
                                         <th onclick="sortUsers('expires_at')">⏰ Expira</th>
                                         <th onclick="sortUsers('is_active')">📊 Status</th>
                                         <th>🔧 Hardware</th>
+                                        <th onclick="sortUsers('created_by')">👨‍💼 Criado por</th>
                                         <th>⚡ Ações</th>
                                     </tr>
                                 </thead>
@@ -986,6 +987,8 @@ def dashboard():
     
     <script>
         let currentUser = null;
+        let currentUserType = null;
+        let currentPermissions = [];
         let editingUserId = null;
         let editingStaffId = null;
         let usersData = [];
@@ -1010,15 +1013,23 @@ def dashboard():
             .then(data => {
                 if (data.success) {
                     currentUser = data.username;
+                    currentUserType = data.user_type;
+                    currentPermissions = data.permissions || [];
+                    
                     // Salvar sessão no localStorage
                     localStorage.setItem('spiderprint_admin_session', JSON.stringify({
                         username: data.username,
+                        userType: data.user_type,
+                        permissions: data.permissions || [],
                         loginTime: Date.now()
                     }));
                     
-                    document.getElementById('currentUser').textContent = currentUser;
+                    document.getElementById('currentUser').textContent = `${currentUser} (${currentUserType})`;
                     document.getElementById('loginPage').style.display = 'none';
                     document.getElementById('dashboardPage').style.display = 'block';
+                    
+                    // Configurar interface baseada nas permissões
+                    setupUserInterface();
                     loadAllData();
                 } else {
                     showError(data.error || 'Credenciais inválidas');
@@ -1041,9 +1052,15 @@ def dashboard():
                     // Sessão válida por 24 horas (86400000 ms)
                     if (sessionAge < 86400000) {
                         currentUser = session.username;
-                        document.getElementById('currentUser').textContent = currentUser;
+                        currentUserType = session.userType || 'Admin';
+                        currentPermissions = session.permissions || ['all'];
+                        
+                        document.getElementById('currentUser').textContent = `${currentUser} (${currentUserType})`;
                         document.getElementById('loginPage').style.display = 'none';
                         document.getElementById('dashboardPage').style.display = 'block';
+                        
+                        // Configurar interface baseada nas permissões
+                        setupUserInterface();
                         loadAllData();
                         return true;
                     } else {
@@ -1068,11 +1085,58 @@ def dashboard():
         
         function logout() {
             currentUser = null;
+            currentUserType = null;
+            currentPermissions = [];
             // Limpar sessão salva
             localStorage.removeItem('spiderprint_admin_session');
             document.getElementById('loginPage').style.display = 'flex';
             document.getElementById('dashboardPage').style.display = 'none';
             document.getElementById('loginForm').reset();
+        }
+        
+        // Configurar interface baseada nas permissões
+        function setupUserInterface() {
+            const isAdmin = currentPermissions.includes('all');
+            const canViewUsers = isAdmin || currentPermissions.includes('users_view');
+            const canCreateUsers = isAdmin || currentPermissions.includes('users_create');
+            const canEditUsers = isAdmin || currentPermissions.includes('users_edit');
+            const canViewLogs = isAdmin || currentPermissions.includes('logs_view');
+            
+            // Controlar visibilidade das abas
+            const tabButtons = document.querySelectorAll('.tab-button');
+            tabButtons.forEach(button => {
+                const tabName = button.textContent.toLowerCase();
+                
+                if (tabName.includes('staff') && !isAdmin) {
+                    button.style.display = 'none';
+                } else if (tabName.includes('backup') && !isAdmin) {
+                    button.style.display = 'none';
+                } else if (tabName.includes('configurações') && !isAdmin) {
+                    button.style.display = 'none';
+                } else if (tabName.includes('logs') && !canViewLogs) {
+                    button.style.display = 'none';
+                } else if (tabName.includes('usuários') && !canViewUsers) {
+                    button.style.display = 'none';
+                } else {
+                    button.style.display = 'block';
+                }
+            });
+            
+            // Controlar botão Novo Usuário
+            const newUserBtn = document.getElementById('newUserBtn');
+            if (newUserBtn) {
+                newUserBtn.style.display = canCreateUsers ? 'block' : 'none';
+            }
+            
+            // Se não é admin, mostrar aba usuários por padrão
+            if (!isAdmin && canViewUsers) {
+                showTab('users');
+            }
+        }
+        
+        // Verificar permissão
+        function hasPermission(permission) {
+            return currentPermissions.includes('all') || currentPermissions.includes(permission);
         }
         
         // Tabs
@@ -1126,7 +1190,13 @@ def dashboard():
         
         // Users
         function loadUsers() {
-            fetch('/api/users')
+            // Se for staff (não admin), filtrar apenas usuários criados por ele
+            let url = '/api/users';
+            if (!hasPermission('all')) {
+                url += `?created_by=${encodeURIComponent(currentUser)}`;
+            }
+            
+            fetch(url)
                 .then(response => response.json())
                 .then(data => {
                     usersData = data;
@@ -1138,7 +1208,7 @@ def dashboard():
         function renderUsers(users) {
             const tbody = document.getElementById('usersTableBody');
             if (!users || users.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #666;">Nenhum usuário encontrado</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: #666;">Nenhum usuário encontrado</td></tr>';
                 return;
             }
             
@@ -1155,6 +1225,8 @@ def dashboard():
                     new Date(user.expires_at).toLocaleDateString('pt-BR') : 
                     '<span style="color: #28a745;">Nunca</span>';
                 
+                const createdByDisplay = user.created_by || 'admin';
+                
                 return `
                     <tr>
                         <td><strong>${user.username}</strong></td>
@@ -1164,15 +1236,20 @@ def dashboard():
                         <td>${expiresDisplay}</td>
                         <td><span class="${statusClass}">${statusText}</span></td>
                         <td>${hardwareDisplay}</td>
+                        <td><span class="hardware-id">${createdByDisplay}</span></td>
                         <td>
-                            <button class="btn btn-sm btn-info" onclick="openUserModal(${user.id})" title="Editar usuário">✏️ Editar</button>
-                            <button class="btn btn-sm ${user.is_active ? 'btn-warning' : 'btn-success'}" 
-                                    onclick="toggleUserStatus(${user.id}, ${user.is_active})"
-                                    title="${user.is_active ? 'Desativar usuário' : 'Ativar usuário'}">
-                                ${user.is_active ? '⏸️ Desativar' : '▶️ Ativar'}
-                            </button>
-                            ${user.hardware_id ? `<button class="btn btn-sm btn-warning" onclick="removeHardware(${user.id})" title="Remover hardware vinculado">🔧 Hardware</button>` : ''}
-                            <button class="btn btn-sm btn-danger" onclick="deleteUser(${user.id}, '${user.username}')" title="Excluir usuário">🗑️ Excluir</button>
+                            ${hasPermission('users_edit') || hasPermission('users_basic_edit') ? 
+                                `<button class="btn btn-sm btn-info" onclick="openUserModal(${user.id})" title="Editar usuário">✏️ Editar</button>` : ''}
+                            ${hasPermission('users_edit') ? 
+                                `<button class="btn btn-sm ${user.is_active ? 'btn-warning' : 'btn-success'}" 
+                                        onclick="toggleUserStatus(${user.id}, ${user.is_active})"
+                                        title="${user.is_active ? 'Desativar usuário' : 'Ativar usuário'}">
+                                    ${user.is_active ? '⏸️ Desativar' : '▶️ Ativar'}
+                                </button>` : ''}
+                            ${(hasPermission('users_hardware') && user.hardware_id) ? 
+                                `<button class="btn btn-sm btn-warning" onclick="removeHardware(${user.id})" title="Remover hardware vinculado">🔧 Hardware</button>` : ''}
+                            ${hasPermission('all') ? 
+                                `<button class="btn btn-sm btn-danger" onclick="deleteUser(${user.id}, '${user.username}')" title="Excluir usuário">🗑️ Excluir</button>` : ''}
                         </td>
                     </tr>
                 `;
@@ -1310,7 +1387,8 @@ def dashboard():
                 username: formData.get('username'),
                 email: formData.get('email'),
                 access_level: formData.get('accessLevel'),
-                license_type: formData.get('licenseType')
+                license_type: formData.get('licenseType'),
+                created_by: currentUser  // Adicionar quem está criando
             };
             
             // Add duration only if not Admin
@@ -1988,7 +2066,7 @@ def dashboard():
 
 @app.route('/api/admin/login', methods=['POST'])
 def admin_login():
-    """Login do admin"""
+    """Login unificado para admin e staff"""
     try:
         data = request.get_json()
         username = data.get('username')
@@ -1997,7 +2075,7 @@ def admin_login():
         if not username or not password:
             return jsonify({'error': 'Username e senha são obrigatórios'}), 400
         
-        # Verificar credenciais do admin
+        # Verificar credenciais do admin primeiro
         if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
             # Log do login
             conn = sqlite3.connect(DATABASE)
@@ -2012,9 +2090,53 @@ def admin_login():
             return jsonify({
                 'success': True,
                 'username': username,
+                'user_type': 'Admin',
+                'permissions': ['all'],
                 'message': 'Login realizado com sucesso'
             })
+        
+        # Verificar credenciais do staff
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, username, password_hash, staff_type, is_active
+            FROM staff
+            WHERE username = ?
+        """, (username,))
+        
+        staff = cursor.fetchone()
+        
+        if staff and staff[4]:  # Se staff existe e está ativo
+            # Verificar senha
+            if staff[2] == hash_password(password):
+                # Log do login
+                cursor.execute("""
+                    INSERT INTO access_logs (username, action, ip_address, details)
+                    VALUES (?, ?, ?, ?)
+                """, (username, 'staff login', request.remote_addr, f'Login staff - Tipo: {staff[3]}'))
+                conn.commit()
+                conn.close()
+                
+                # Definir permissões baseadas no tipo de staff
+                permissions = []
+                if staff[3] == 'Vendedor':
+                    permissions = ['users_view', 'users_create', 'users_basic_edit']
+                elif staff[3] == 'Técnico':
+                    permissions = ['users_view', 'users_create', 'users_edit', 'users_hardware', 'logs_view']
+                
+                return jsonify({
+                    'success': True,
+                    'username': username,
+                    'user_type': staff[3],
+                    'permissions': permissions,
+                    'message': 'Login realizado com sucesso'
+                })
+            else:
+                conn.close()
+                return jsonify({'error': 'Credenciais inválidas'}), 401
         else:
+            conn.close()
             return jsonify({'error': 'Credenciais inválidas'}), 401
             
     except Exception as e:
@@ -2124,18 +2246,28 @@ def get_stats():
 
 @app.route('/api/users', methods=['GET'])
 def get_users():
-    """Listar usuários"""
+    """Listar usuários (filtrado por criador se for staff)"""
     try:
+        # Verificar se é uma requisição de staff
+        created_by_filter = request.args.get('created_by')
+        
         conn = sqlite3.connect(DATABASE)
         cursor = conn.cursor()
         
-        cursor.execute("""
+        # Query base
+        base_query = """
             SELECT id, username, email, created_at, expires_at, license_type, 
                    access_level, user_type, is_active, last_login, hardware_id, created_by
             FROM users
             WHERE user_type != 'Admin'
-            ORDER BY created_at DESC
-        """)
+        """
+        
+        # Adicionar filtro por criador se especificado
+        if created_by_filter:
+            base_query += " AND created_by = ?"
+            cursor.execute(base_query + " ORDER BY created_at DESC", (created_by_filter,))
+        else:
+            cursor.execute(base_query + " ORDER BY created_at DESC")
         
         users = []
         for row in cursor.fetchall():
@@ -2213,6 +2345,7 @@ def create_user():
         access_level = data.get('access_level', 'Básico')
         license_type = data.get('license_type', 'Trial')
         duration = data.get('duration', 30)
+        created_by_user = data.get('created_by', 'admin')  # Quem está criando
         
         # Validações básicas
         if len(username) < 3:
@@ -2247,7 +2380,7 @@ def create_user():
             INSERT INTO users (username, email, password_hash, expires_at, license_type, 
                              access_level, user_type, created_by)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (username, email, password_hash, expires_at, license_type, access_level, user_type, 'admin'))
+        """, (username, email, password_hash, expires_at, license_type, access_level, user_type, created_by_user))
         
         user_id = cursor.lastrowid
         
@@ -2255,7 +2388,7 @@ def create_user():
         cursor.execute("""
             INSERT INTO access_logs (username, action, ip_address, details)
             VALUES (?, ?, ?, ?)
-        """, ('admin', 'user created', request.remote_addr, f'Usuário {username} criado'))
+        """, (created_by_user, 'user created', request.remote_addr, f'Usuário {username} criado'))
         
         conn.commit()
         conn.close()
