@@ -1967,9 +1967,8 @@ def change_admin_password():
         conn.commit()
         conn.close()
         
-        # Atualizar variável global (para esta sessão)
-        global ADMIN_PASSWORD
-        ADMIN_PASSWORD = new_password
+        # Nota: A senha foi atualizada no banco de dados
+        # Para esta sessão, a variável global permanece inalterada
         
         return jsonify({'message': 'Senha alterada com sucesso'})
         
