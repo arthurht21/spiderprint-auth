@@ -453,6 +453,9 @@ def dashboard():
             padding: 6px 12px;
             font-size: 12px;
             margin-right: 5px;
+            margin-bottom: 3px;
+            white-space: nowrap;
+            display: inline-block;
         }
         
         .btn-success {
@@ -619,6 +622,12 @@ def dashboard():
             .data-table th,
             .data-table td {
                 padding: 8px 10px;
+            }
+            
+            .btn-sm {
+                font-size: 11px;
+                padding: 4px 8px;
+                margin-right: 3px;
             }
         }
     </style>
@@ -1001,6 +1010,12 @@ def dashboard():
             .then(data => {
                 if (data.success) {
                     currentUser = data.username;
+                    // Salvar sessão no localStorage
+                    localStorage.setItem('spiderprint_admin_session', JSON.stringify({
+                        username: data.username,
+                        loginTime: Date.now()
+                    }));
+                    
                     document.getElementById('currentUser').textContent = currentUser;
                     document.getElementById('loginPage').style.display = 'none';
                     document.getElementById('dashboardPage').style.display = 'block';
@@ -1015,6 +1030,33 @@ def dashboard():
             });
         });
         
+        // Verificar sessão salva ao carregar a página
+        function checkSavedSession() {
+            const savedSession = localStorage.getItem('spiderprint_admin_session');
+            if (savedSession) {
+                try {
+                    const session = JSON.parse(savedSession);
+                    const sessionAge = Date.now() - session.loginTime;
+                    
+                    // Sessão válida por 24 horas (86400000 ms)
+                    if (sessionAge < 86400000) {
+                        currentUser = session.username;
+                        document.getElementById('currentUser').textContent = currentUser;
+                        document.getElementById('loginPage').style.display = 'none';
+                        document.getElementById('dashboardPage').style.display = 'block';
+                        loadAllData();
+                        return true;
+                    } else {
+                        // Sessão expirada
+                        localStorage.removeItem('spiderprint_admin_session');
+                    }
+                } catch (e) {
+                    localStorage.removeItem('spiderprint_admin_session');
+                }
+            }
+            return false;
+        }
+        
         function showError(message) {
             const errorDiv = document.getElementById('errorMessage');
             errorDiv.textContent = message;
@@ -1026,6 +1068,8 @@ def dashboard():
         
         function logout() {
             currentUser = null;
+            // Limpar sessão salva
+            localStorage.removeItem('spiderprint_admin_session');
             document.getElementById('loginPage').style.display = 'flex';
             document.getElementById('dashboardPage').style.display = 'none';
             document.getElementById('loginForm').reset();
@@ -1121,13 +1165,14 @@ def dashboard():
                         <td><span class="${statusClass}">${statusText}</span></td>
                         <td>${hardwareDisplay}</td>
                         <td>
-                            <button class="btn btn-sm btn-info" onclick="openUserModal(${user.id})">✏️</button>
+                            <button class="btn btn-sm btn-info" onclick="openUserModal(${user.id})" title="Editar usuário">✏️ Editar</button>
                             <button class="btn btn-sm ${user.is_active ? 'btn-warning' : 'btn-success'}" 
-                                    onclick="toggleUserStatus(${user.id}, ${user.is_active})">
-                                ${user.is_active ? '⏸️' : '▶️'}
+                                    onclick="toggleUserStatus(${user.id}, ${user.is_active})"
+                                    title="${user.is_active ? 'Desativar usuário' : 'Ativar usuário'}">
+                                ${user.is_active ? '⏸️ Desativar' : '▶️ Ativar'}
                             </button>
-                            ${user.hardware_id ? `<button class="btn btn-sm btn-warning" onclick="removeHardware(${user.id})">🔧</button>` : ''}
-                            <button class="btn btn-sm btn-danger" onclick="deleteUser(${user.id}, '${user.username}')">🗑️</button>
+                            ${user.hardware_id ? `<button class="btn btn-sm btn-warning" onclick="removeHardware(${user.id})" title="Remover hardware vinculado">🔧 Hardware</button>` : ''}
+                            <button class="btn btn-sm btn-danger" onclick="deleteUser(${user.id}, '${user.username}')" title="Excluir usuário">🗑️ Excluir</button>
                         </td>
                     </tr>
                 `;
@@ -1296,8 +1341,14 @@ def dashboard():
                 } else {
                     alert(isEditing ? 'Usuário editado com sucesso!' : 'Usuário criado com sucesso!');
                     closeUserModal();
+                    // Atualizar dados imediatamente
                     loadUsers();
                     loadStats();
+                    // Forçar atualização após um pequeno delay para garantir que o backend processou
+                    setTimeout(() => {
+                        loadUsers();
+                        loadStats();
+                    }, 1000);
                 }
             })
             .catch(error => {
@@ -1321,8 +1372,14 @@ def dashboard():
                     if (data.error) {
                         alert('Erro: ' + data.error);
                     } else {
+                        // Atualizar dados imediatamente
                         loadUsers();
                         loadStats();
+                        // Forçar atualização após delay
+                        setTimeout(() => {
+                            loadUsers();
+                            loadStats();
+                        }, 1000);
                     }
                 })
                 .catch(error => {
@@ -1346,7 +1403,14 @@ def dashboard():
                         alert('Erro: ' + data.error);
                     } else {
                         alert('Hardware ID removido com sucesso!');
+                        // Atualizar dados imediatamente
                         loadUsers();
+                        loadStats();
+                        // Forçar atualização após delay
+                        setTimeout(() => {
+                            loadUsers();
+                            loadStats();
+                        }, 1000);
                     }
                 })
                 .catch(error => {
@@ -1409,12 +1473,13 @@ def dashboard():
                         <td><span class="${statusClass}">${statusText}</span></td>
                         <td>${member.created_users || 0}</td>
                         <td>
-                            <button class="btn btn-sm btn-info" onclick="openStaffModal(${member.id})">✏️</button>
+                            <button class="btn btn-sm btn-info" onclick="openStaffModal(${member.id})" title="Editar staff">✏️ Editar</button>
                             <button class="btn btn-sm ${member.is_active ? 'btn-warning' : 'btn-success'}" 
-                                    onclick="toggleStaffStatus(${member.id}, ${member.is_active})">
-                                ${member.is_active ? '⏸️' : '▶️'}
+                                    onclick="toggleStaffStatus(${member.id}, ${member.is_active})"
+                                    title="${member.is_active ? 'Desativar staff' : 'Ativar staff'}">
+                                ${member.is_active ? '⏸️ Desativar' : '▶️ Ativar'}
                             </button>
-                            <button class="btn btn-sm btn-danger" onclick="deleteStaff(${member.id}, '${member.username}')">🗑️</button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteStaff(${member.id}, '${member.username}')" title="Excluir staff">🗑️ Excluir</button>
                         </td>
                     </tr>
                 `;
@@ -1885,10 +1950,32 @@ def dashboard():
             });
         });
         
-        // Auto refresh every 30 seconds
-        setInterval(() => {
-            if (currentUser) {
+        // Inicializar página
+        document.addEventListener('DOMContentLoaded', function() {
+            // Verificar se há sessão salva
+            if (!checkSavedSession()) {
+                // Se não há sessão, mostrar página de login
+                document.getElementById('loginPage').style.display = 'flex';
+                document.getElementById('dashboardPage').style.display = 'none';
+            }
+        });
+        
+        // Atualização automática a cada 30 segundos (apenas se logado)
+        setInterval(function() {
+            if (currentUser && document.getElementById('dashboardPage').style.display !== 'none') {
                 loadStats();
+                // Recarregar dados da aba ativa
+                const activeTab = document.querySelector('.tab-content.active');
+                if (activeTab) {
+                    const tabId = activeTab.id;
+                    if (tabId === 'users') {
+                        loadUsers();
+                    } else if (tabId === 'staff') {
+                        loadStaff();
+                    } else if (tabId === 'logs') {
+                        loadLogs();
+                    }
+                }
             }
         }, 30000);
     </script>
