@@ -1,31 +1,45 @@
-from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for
+from flask import Flask, request, jsonify, render_template_string, send_file
 from flask_cors import CORS
 import sqlite3
 import hashlib
 import datetime
 import os
 import json
-import secrets
+import shutil
+import tempfile
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 CORS(app)
 
-# Configuração de sessão
-app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
-
 # Configuração do banco de dados
 DATABASE = 'spiderprint.db'
 
-# Credenciais de administrador (pode ser alterado via variáveis de ambiente)
-ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'admin')
-ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'spiderprint2024')
+# Configuração de fuso horário Brasil (UTC-3)
+BRAZIL_OFFSET = datetime.timedelta(hours=-3)
+
+def get_brazil_time():
+    """Retorna o horário atual do Brasil (UTC-3)"""
+    return datetime.datetime.utcnow() + BRAZIL_OFFSET
+
+def format_brazil_time(dt_string):
+    """Formata timestamp para horário do Brasil"""
+    if not dt_string:
+        return None
+    dt = datetime.datetime.fromisoformat(dt_string.replace('Z', ''))
+    brazil_time = dt + BRAZIL_OFFSET
+    return brazil_time.strftime('%Y-%m-%d %H:%M:%S')
+
+# Credenciais do admin
+ADMIN_USERNAME = 'admin'
+ADMIN_PASSWORD = 'Asd4d45#2365'
 
 def init_db():
     """Inicializa o banco de dados"""
     conn = sqlite3.connect(DATABASE)
     cursor = conn.cursor()
     
-    # Criar tabela de usuários
+    # Criar tabela de usuários com campos adicionais
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,9 +50,11 @@ def init_db():
             expires_at TIMESTAMP,
             license_type TEXT DEFAULT 'Trial',
             access_level TEXT DEFAULT 'Básico',
+            user_type TEXT DEFAULT 'Cliente',
             is_active BOOLEAN DEFAULT 1,
             last_login TIMESTAMP,
-            hardware_id TEXT
+            hardware_id TEXT,
+            created_by TEXT
         )
     ''')
     
@@ -50,285 +66,59 @@ def init_db():
             action TEXT,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             ip_address TEXT,
-            hardware_id TEXT
+            hardware_id TEXT,
+            details TEXT
+        )
+    ''')
+    
+    # Criar tabela de staff (vendedores/técnicos)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS staff (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            staff_type TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN DEFAULT 1,
+            created_by TEXT
         )
     ''')
     
     conn.commit()
     conn.close()
 
+def create_admin_if_not_exists():
+    """Cria usuário admin se não existir"""
+    conn = sqlite3.connect(DATABASE)
+    cursor = conn.cursor()
+    
+    # Sempre recriar o admin para garantir credenciais corretas
+    print("🔄 Recriando usuário admin...")
+    
+    # Deletar admin existente
+    cursor.execute('DELETE FROM users WHERE username = ?', (ADMIN_USERNAME,))
+    
+    # Inserir novo admin com credenciais corretas
+    admin_hash = hash_password(ADMIN_PASSWORD)
+    cursor.execute('''
+        INSERT INTO users (username, email, password_hash, license_type, access_level, user_type, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (ADMIN_USERNAME, 'admin@spiderprint.com', admin_hash, 'Admin', 'Admin', 'Admin', None))
+    
+    conn.commit()
+    conn.close()
+    print(f"✅ Usuário admin criado com sucesso!")
+    print(f"👤 Usuário: {ADMIN_USERNAME}")
+    print(f"🔑 Senha: {ADMIN_PASSWORD}")
+
 def hash_password(password):
     """Hash da senha"""
     return hashlib.sha256(password.encode()).hexdigest()
 
-def require_admin_login():
-    """Verifica se o admin está logado"""
-    return session.get('admin_logged_in') == True
-
 @app.route('/')
-def index():
-    """Página inicial - redireciona para login ou dashboard"""
-    if require_admin_login():
-        return dashboard()
-    else:
-        return admin_login()
-
-@app.route('/admin/login')
-def admin_login():
-    """Página de login do administrador"""
-    html = '''
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SpiderPrint - Login Administrativo</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-        
-        .login-container {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 40px;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            width: 100%;
-            max-width: 400px;
-            text-align: center;
-        }
-        
-        .logo {
-            font-size: 3em;
-            margin-bottom: 10px;
-        }
-        
-        .title {
-            color: #333;
-            font-size: 2em;
-            font-weight: bold;
-            margin-bottom: 10px;
-        }
-        
-        .subtitle {
-            color: #666;
-            margin-bottom: 30px;
-            font-size: 1.1em;
-        }
-        
-        .form-group {
-            margin-bottom: 20px;
-            text-align: left;
-        }
-        
-        .form-group label {
-            display: block;
-            margin-bottom: 8px;
-            color: #333;
-            font-weight: 500;
-        }
-        
-        .form-group input {
-            width: 100%;
-            padding: 15px;
-            border: 2px solid #e1e5e9;
-            border-radius: 12px;
-            font-size: 16px;
-            transition: border-color 0.3s ease;
-        }
-        
-        .form-group input:focus {
-            outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }
-        
-        .btn {
-            width: 100%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            padding: 15px;
-            border-radius: 12px;
-            cursor: pointer;
-            font-size: 16px;
-            font-weight: 600;
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-            margin-top: 10px;
-        }
-        
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
-        }
-        
-        .error-message {
-            background: #fee;
-            color: #c33;
-            padding: 12px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            border: 1px solid #fcc;
-        }
-        
-        .info-box {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 8px;
-            margin-top: 20px;
-            font-size: 0.9em;
-            color: #666;
-        }
-        
-        .security-note {
-            margin-top: 20px;
-            font-size: 0.8em;
-            color: #999;
-        }
-    </style>
-</head>
-<body>
-    <div class="login-container">
-        <div class="logo">🕷️</div>
-        <h1 class="title">SpiderPrint</h1>
-        <p class="subtitle">Dashboard Administrativo</p>
-        
-        <div id="errorMessage" class="error-message" style="display: none;"></div>
-        
-        <form id="loginForm">
-            <div class="form-group">
-                <label for="username">Usuário Administrador:</label>
-                <input type="text" id="username" name="username" required autocomplete="username">
-            </div>
-            
-            <div class="form-group">
-                <label for="password">Senha:</label>
-                <input type="password" id="password" name="password" required autocomplete="current-password">
-            </div>
-            
-            <button type="submit" class="btn">🔐 Entrar no Dashboard</button>
-        </form>
-        
-        <div class="info-box">
-            <strong>🛡️ Área Restrita</strong><br>
-            Acesso exclusivo para administradores do sistema SpiderPrint.
-        </div>
-        
-        <div class="security-note">
-            🔒 Conexão segura • Dados protegidos
-        </div>
-    </div>
-    
-    <script>
-        document.getElementById('loginForm').addEventListener('submit', function(e) {
-            e.preventDefault();
-            
-            const username = document.getElementById('username').value;
-            const password = document.getElementById('password').value;
-            const errorDiv = document.getElementById('errorMessage');
-            
-            if (!username || !password) {
-                showError('Por favor, preencha todos os campos.');
-                return;
-            }
-            
-            // Fazer login
-            fetch('/admin/authenticate', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    username: username,
-                    password: password
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    window.location.href = '/dashboard';
-                } else {
-                    showError(data.error || 'Credenciais inválidas');
-                }
-            })
-            .catch(error => {
-                console.error('Erro:', error);
-                showError('Erro de conexão. Tente novamente.');
-            });
-        });
-        
-        function showError(message) {
-            const errorDiv = document.getElementById('errorMessage');
-            errorDiv.textContent = message;
-            errorDiv.style.display = 'block';
-            
-            // Esconder após 5 segundos
-            setTimeout(() => {
-                errorDiv.style.display = 'none';
-            }, 5000);
-        }
-        
-        // Focus no campo usuário
-        document.getElementById('username').focus();
-    </script>
-</body>
-</html>
-    '''
-    return html
-
-@app.route('/admin/authenticate', methods=['POST'])
-def admin_authenticate():
-    """Autentica o administrador"""
-    try:
-        data = request.get_json()
-        username = data.get('username', '').strip()
-        password = data.get('password', '').strip()
-        
-        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
-            session['admin_logged_in'] = True
-            session['admin_username'] = username
-            
-            # Log da ação
-            conn = sqlite3.connect(DATABASE)
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO access_logs (username, action, ip_address)
-                VALUES (?, ?, ?)
-            """, (f"admin:{username}", 'login administrativo', request.remote_addr))
-            conn.commit()
-            conn.close()
-            
-            return jsonify({'success': True})
-        else:
-            return jsonify({'success': False, 'error': 'Credenciais inválidas'})
-            
-    except Exception as e:
-        return jsonify({'success': False, 'error': 'Erro interno'}), 500
-
-@app.route('/admin/logout')
-def admin_logout():
-    """Logout do administrador"""
-    session.clear()
-    return redirect(url_for('admin_login'))
-
-@app.route('/dashboard')
 def dashboard():
-    """Dashboard administrativo (protegido)"""
-    if not require_admin_login():
-        return redirect(url_for('admin_login'))
-    
+    """Dashboard administrativo com sistema de login"""
     html = '''
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -347,11 +137,97 @@ def dashboard():
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
+        }
+        
+        /* Login Page Styles */
+        .login-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
             padding: 20px;
         }
         
-        .container {
-            max-width: 1200px;
+        .login-card {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 40px;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            width: 100%;
+            max-width: 400px;
+            text-align: center;
+        }
+        
+        .login-card h1 {
+            color: #333;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        
+        .login-card p {
+            color: #666;
+            margin-bottom: 30px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+            text-align: left;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
+        }
+        
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e1e5e9;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s ease;
+        }
+        
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.3s ease;
+            width: 100%;
+        }
+        
+        .btn:hover {
+            background: #5a6fd8;
+        }
+        
+        .error-message {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        
+        /* Dashboard Styles */
+        .dashboard-container {
+            display: none;
+            padding: 20px;
+            max-width: 1400px;
             margin: 0 auto;
         }
         
@@ -366,114 +242,217 @@ def dashboard():
             align-items: center;
         }
         
-        .header-left h1 {
+        .header h1 {
             color: #333;
             display: flex;
             align-items: center;
             gap: 10px;
         }
         
-        .header-left p {
-            color: #666;
-            margin-top: 5px;
-        }
-        
-        .header-right {
+        .header-actions {
             display: flex;
+            gap: 10px;
             align-items: center;
-            gap: 15px;
         }
         
-        .admin-info {
-            text-align: right;
+        .user-info {
             color: #666;
-            font-size: 0.9em;
+            margin-right: 15px;
         }
         
-        .logout-btn {
+        .btn-logout {
             background: #dc3545;
             color: white;
             border: none;
-            padding: 10px 20px;
-            border-radius: 8px;
+            padding: 8px 16px;
+            border-radius: 6px;
             cursor: pointer;
-            font-size: 14px;
-            transition: background 0.3s ease;
+            font-size: 12px;
         }
         
-        .logout-btn:hover {
+        .btn-logout:hover {
             background: #c82333;
         }
         
+        /* Tabs */
+        .tabs {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        }
+        
+        .tab-buttons {
+            display: flex;
+            border-bottom: 1px solid #eee;
+            padding: 0 20px;
+        }
+        
+        .tab-button {
+            background: none;
+            border: none;
+            padding: 15px 20px;
+            cursor: pointer;
+            font-size: 14px;
+            color: #666;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s ease;
+        }
+        
+        .tab-button.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+        
+        .tab-button:hover {
+            color: #667eea;
+        }
+        
+        .tab-content {
+            display: none;
+            padding: 20px;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        /* Stats Grid */
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 20px;
             margin-bottom: 30px;
         }
         
         .stat-card {
             background: rgba(255, 255, 255, 0.95);
-            padding: 25px;
-            border-radius: 15px;
+            padding: 20px;
+            border-radius: 12px;
             text-align: center;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
             transition: transform 0.3s ease;
         }
         
         .stat-card:hover {
-            transform: translateY(-5px);
+            transform: translateY(-3px);
         }
         
         .stat-number {
-            font-size: 2.5em;
+            font-size: 2em;
             font-weight: bold;
             color: #667eea;
-            margin-bottom: 10px;
+            margin-bottom: 8px;
         }
         
         .stat-label {
             color: #666;
-            font-size: 0.9em;
+            font-size: 0.85em;
             text-transform: uppercase;
             letter-spacing: 1px;
         }
         
-        .main-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 30px;
+        /* Tables */
+        .table-container {
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
         }
         
-        .section {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 25px;
-            border-radius: 15px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-        }
-        
-        .section h2 {
-            color: #333;
-            margin-bottom: 20px;
+        .table-header {
+            background: #f8f9fa;
+            padding: 15px 20px;
+            border-bottom: 1px solid #eee;
             display: flex;
+            justify-content: space-between;
             align-items: center;
+        }
+        
+        .table-header h3 {
+            color: #333;
+            margin: 0;
+        }
+        
+        .search-filter {
+            display: flex;
             gap: 10px;
+            margin-bottom: 15px;
         }
         
-        .btn {
-            background: #667eea;
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 8px;
-            cursor: pointer;
+        .search-input {
+            flex: 1;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
             font-size: 14px;
-            transition: background 0.3s ease;
-            margin-right: 10px;
         }
         
-        .btn:hover {
-            background: #5a6fd8;
+        .filter-select {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            min-width: 120px;
+        }
+        
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .data-table th,
+        .data-table td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .data-table th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #333;
+            cursor: pointer;
+            user-select: none;
+        }
+        
+        .data-table th:hover {
+            background: #e9ecef;
+        }
+        
+        .data-table tr:hover {
+            background: #f8f9fa;
+        }
+        
+        .status-active {
+            color: #28a745;
+            font-weight: bold;
+        }
+        
+        .status-inactive {
+            color: #dc3545;
+            font-weight: bold;
+        }
+        
+        .status-expired {
+            color: #ffc107;
+            font-weight: bold;
+        }
+        
+        .hardware-id {
+            font-family: monospace;
+            font-size: 0.8em;
+            background: #f8f9fa;
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #667eea;
+        }
+        
+        /* Action Buttons */
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 12px;
+            margin-right: 5px;
         }
         
         .btn-success {
@@ -501,11 +480,15 @@ def dashboard():
             background: #c82333;
         }
         
-        .btn-sm {
-            padding: 8px 16px;
-            font-size: 12px;
+        .btn-info {
+            background: #17a2b8;
         }
         
+        .btn-info:hover {
+            background: #138496;
+        }
+        
+        /* Modal */
         .modal {
             display: none;
             position: fixed;
@@ -539,224 +522,375 @@ def dashboard():
             color: #000;
         }
         
-        .form-group {
+        /* Backup Section */
+        .backup-section {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
             margin-bottom: 20px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
         }
         
-        .form-group label {
-            display: block;
-            margin-bottom: 8px;
-            color: #333;
-            font-weight: 500;
+        .backup-actions {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
         }
         
-        .form-group input,
-        .form-group select {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #e1e5e9;
+        .upload-area {
+            border: 2px dashed #ddd;
             border-radius: 8px;
-            font-size: 14px;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 20px;
             transition: border-color 0.3s ease;
         }
         
-        .form-group input:focus,
-        .form-group select:focus {
-            outline: none;
+        .upload-area:hover {
             border-color: #667eea;
         }
         
-        .user-list {
-            max-height: 400px;
+        .upload-area.dragover {
+            border-color: #667eea;
+            background: #f8f9ff;
+        }
+        
+        .backup-list {
+            max-height: 300px;
             overflow-y: auto;
         }
         
-        .user-item {
-            padding: 15px;
-            border-bottom: 1px solid #eee;
+        .backup-item {
             display: flex;
             justify-content: space-between;
             align-items: center;
+            padding: 10px;
+            border-bottom: 1px solid #eee;
         }
         
-        .user-info h4 {
+        .backup-info {
+            flex: 1;
+        }
+        
+        .backup-name {
+            font-weight: 500;
             color: #333;
-            margin-bottom: 5px;
         }
         
-        .user-info p {
+        .backup-details {
+            font-size: 0.85em;
             color: #666;
-            font-size: 0.9em;
         }
         
-        .user-actions {
+        .backup-actions-btn {
             display: flex;
             gap: 5px;
         }
         
-        .status-active {
-            color: #28a745;
-            font-weight: bold;
-        }
-        
-        .status-inactive {
-            color: #dc3545;
-            font-weight: bold;
-        }
-        
-        .access-level {
-            display: inline-block;
-            padding: 3px 8px;
-            border-radius: 12px;
-            font-size: 0.8em;
-            font-weight: bold;
-            margin-left: 8px;
-        }
-        
-        .access-basico {
-            background: #e3f2fd;
-            color: #1976d2;
-        }
-        
-        .access-avancado {
-            background: #fff3e0;
-            color: #f57c00;
-        }
-        
-        .access-completo {
-            background: #e8f5e8;
-            color: #388e3c;
-        }
-        
-        .logs-list {
-            max-height: 400px;
-            overflow-y: auto;
-        }
-        
-        .log-item {
-            padding: 12px;
-            border-bottom: 1px solid #eee;
-            font-size: 0.9em;
-        }
-        
-        .log-time {
-            color: #666;
-            font-weight: 500;
-        }
-        
-        .log-action {
-            color: #333;
-            margin-left: 10px;
-        }
-        
-        .log-hardware {
-            color: #667eea;
-            font-size: 0.8em;
-            margin-top: 5px;
-            font-family: monospace;
-        }
-        
-        .hardware-id {
-            color: #667eea;
-            font-family: monospace;
-            font-size: 0.8em;
-            background: #f8f9fa;
-            padding: 2px 6px;
-            border-radius: 4px;
-            margin-top: 3px;
-            display: inline-block;
-        }
-        
+        /* Responsive */
         @media (max-width: 768px) {
-            .main-grid {
-                grid-template-columns: 1fr;
+            .tab-buttons {
+                flex-wrap: wrap;
+                padding: 0 10px;
+            }
+            
+            .tab-button {
+                padding: 12px 15px;
+                font-size: 13px;
             }
             
             .stats-grid {
                 grid-template-columns: repeat(2, 1fr);
             }
             
-            .user-item {
+            .search-filter {
                 flex-direction: column;
-                align-items: flex-start;
-                gap: 10px;
             }
             
-            .user-actions {
-                width: 100%;
-                justify-content: flex-end;
+            .backup-actions {
+                flex-direction: column;
             }
             
-            .header {
-                flex-direction: column;
-                gap: 15px;
-                text-align: center;
+            .data-table {
+                font-size: 13px;
+            }
+            
+            .data-table th,
+            .data-table td {
+                padding: 8px 10px;
             }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <div class="header-left">
-                <h1>🕷️ SpiderPrint</h1>
-                <p>Dashboard Administrativo - Sistema de Autenticação com Níveis de Acesso</p>
-            </div>
-            <div class="header-right">
-                <div class="admin-info">
-                    <div>👤 Administrador</div>
-                    <div>🔐 Sessão Segura</div>
+    <!-- Login Page -->
+    <div id="loginPage" class="login-container">
+        <div class="login-card">
+            <h1>🕷️ SpiderPrint</h1>
+            <p>Dashboard Administrativo</p>
+            
+            <div id="errorMessage" class="error-message"></div>
+            
+            <form id="loginForm">
+                <div class="form-group">
+                    <label for="loginUsername">Usuário:</label>
+                    <input type="text" id="loginUsername" name="username" required>
                 </div>
-                <button class="logout-btn" onclick="logout()">🚪 Sair</button>
+                <div class="form-group">
+                    <label for="loginPassword">Senha:</label>
+                    <input type="password" id="loginPassword" name="password" required>
+                </div>
+                <button type="submit" class="btn">🔐 Entrar</button>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Dashboard -->
+    <div id="dashboardPage" class="dashboard-container">
+        <div class="header">
+            <div>
+                <h1>🕷️ SpiderPrint</h1>
+                <p>Dashboard Administrativo - Sistema Completo</p>
+            </div>
+            <div class="header-actions">
+                <span class="user-info">👤 <span id="currentUser">Admin</span></span>
+                <button class="btn-logout" onclick="logout()">🚪 Sair</button>
             </div>
         </div>
         
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-number" id="totalUsers">0</div>
-                <div class="stat-label">Total de Usuários</div>
+        <div class="tabs">
+            <div class="tab-buttons">
+                <button class="tab-button active" onclick="showTab('dashboard')">📊 Dashboard</button>
+                <button class="tab-button" onclick="showTab('users')">👥 Usuários</button>
+                <button class="tab-button" onclick="showTab('staff')">👨‍💼 Staff</button>
+                <button class="tab-button" onclick="showTab('logs')">📋 Logs</button>
+                <button class="tab-button" onclick="showTab('backup')">💾 Backup</button>
+                <button class="tab-button" onclick="showTab('settings')">⚙️ Configurações</button>
             </div>
-            <div class="stat-card">
-                <div class="stat-number" id="activeUsers">0</div>
-                <div class="stat-label">Usuários Ativos</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number" id="basicUsers">0</div>
-                <div class="stat-label">Nível Básico</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number" id="advancedUsers">0</div>
-                <div class="stat-label">Nível Avançado</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number" id="completeUsers">0</div>
-                <div class="stat-label">Nível Completo</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number" id="todayLogins">0</div>
-                <div class="stat-label">Logins Hoje</div>
-            </div>
-        </div>
-        
-        <div class="main-grid">
-            <div class="section">
-                <h2>👥 Usuários</h2>
-                <button class="btn btn-success" onclick="openUserModal()">+ Novo Usuário</button>
-                <div class="user-list" id="userList">
-                    <!-- Usuários serão carregados aqui -->
+            
+            <!-- Dashboard Tab -->
+            <div id="dashboard" class="tab-content active">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-number" id="totalUsers">0</div>
+                        <div class="stat-label">Total de Usuários</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="activeUsers">0</div>
+                        <div class="stat-label">Usuários Ativos</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="todayLogins">0</div>
+                        <div class="stat-label">Logins Hoje</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="activeLicenses">0</div>
+                        <div class="stat-label">Licenças Ativas</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="expiringLicenses">0</div>
+                        <div class="stat-label">Expirando em 7 dias</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="totalStaff">0</div>
+                        <div class="stat-label">Staff Ativo</div>
+                    </div>
                 </div>
             </div>
             
-            <div class="section">
-                <h2>📊 Logs de Acesso</h2>
-                <div class="logs-list" id="logsList">
-                    <!-- Logs serão carregados aqui -->
+            <!-- Users Tab -->
+            <div id="users" class="tab-content">
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3>👥 Gerenciar Usuários</h3>
+                        <button class="btn btn-success" onclick="openUserModal()">+ Novo Usuário</button>
+                    </div>
+                    <div style="padding: 15px;">
+                        <div class="search-filter">
+                            <input type="text" class="search-input" id="userSearch" placeholder="🔍 Buscar usuários..." onkeyup="filterUsers()">
+                            <select class="filter-select" id="userLevelFilter" onchange="filterUsers()">
+                                <option value="">Todos os Níveis</option>
+                                <option value="Básico">Básico</option>
+                                <option value="Avançado">Avançado</option>
+                                <option value="Completo">Completo</option>
+                                <option value="Admin">Admin</option>
+                            </select>
+                            <select class="filter-select" id="userStatusFilter" onchange="filterUsers()">
+                                <option value="">Todos os Status</option>
+                                <option value="active">Ativo</option>
+                                <option value="inactive">Inativo</option>
+                                <option value="expired">Expirado</option>
+                            </select>
+                            <button class="btn btn-info btn-sm" onclick="exportUsers()">📊 Exportar CSV</button>
+                        </div>
+                        <div style="overflow-x: auto;">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th onclick="sortUsers('username')">👤 Usuário</th>
+                                        <th onclick="sortUsers('email')">📧 Email</th>
+                                        <th onclick="sortUsers('access_level')">🎯 Nível</th>
+                                        <th onclick="sortUsers('license_type')">📄 Licença</th>
+                                        <th onclick="sortUsers('expires_at')">⏰ Expira</th>
+                                        <th onclick="sortUsers('is_active')">📊 Status</th>
+                                        <th>🔧 Hardware</th>
+                                        <th>⚡ Ações</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="usersTableBody">
+                                    <!-- Usuários serão carregados aqui -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Staff Tab -->
+            <div id="staff" class="tab-content">
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3>👨‍💼 Gerenciar Staff (Vendedores/Técnicos)</h3>
+                        <button class="btn btn-success" onclick="openStaffModal()">+ Novo Staff</button>
+                    </div>
+                    <div style="padding: 15px;">
+                        <div class="search-filter">
+                            <input type="text" class="search-input" id="staffSearch" placeholder="🔍 Buscar staff..." onkeyup="filterStaff()">
+                            <select class="filter-select" id="staffTypeFilter" onchange="filterStaff()">
+                                <option value="">Todos os Tipos</option>
+                                <option value="Vendedor">Vendedor</option>
+                                <option value="Técnico">Técnico</option>
+                            </select>
+                        </div>
+                        <div style="overflow-x: auto;">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>👤 Usuário</th>
+                                        <th>📧 Email</th>
+                                        <th>🏷️ Tipo</th>
+                                        <th>📅 Criado em</th>
+                                        <th>📊 Status</th>
+                                        <th>🎯 Acessos Criados</th>
+                                        <th>⚡ Ações</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="staffTableBody">
+                                    <!-- Staff será carregado aqui -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Logs Tab -->
+            <div id="logs" class="tab-content">
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3>📋 Logs de Acesso</h3>
+                        <div>
+                            <button class="btn btn-info btn-sm" onclick="exportLogs()">📊 Exportar CSV</button>
+                            <button class="btn btn-warning btn-sm" onclick="clearOldLogs()">🗑️ Limpar Antigos</button>
+                        </div>
+                    </div>
+                    <div style="padding: 15px;">
+                        <div class="search-filter">
+                            <input type="text" class="search-input" id="logSearch" placeholder="🔍 Buscar logs..." onkeyup="filterLogs()">
+                            <input type="date" class="filter-select" id="logDateFilter" onchange="filterLogs()">
+                            <select class="filter-select" id="logActionFilter" onchange="filterLogs()">
+                                <option value="">Todas as Ações</option>
+                                <option value="login">Login</option>
+                                <option value="logout">Logout</option>
+                                <option value="created">Criado</option>
+                                <option value="updated">Atualizado</option>
+                                <option value="deleted">Excluído</option>
+                            </select>
+                        </div>
+                        <div style="overflow-x: auto; max-height: 500px;">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>⏰ Data/Hora</th>
+                                        <th>👤 Usuário</th>
+                                        <th>⚡ Ação</th>
+                                        <th>🌐 IP</th>
+                                        <th>🔧 Hardware</th>
+                                        <th>📋 Detalhes</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="logsTableBody">
+                                    <!-- Logs serão carregados aqui -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Backup Tab -->
+            <div id="backup" class="tab-content">
+                <div class="backup-section">
+                    <h3>💾 Sistema de Backup</h3>
+                    <div class="backup-actions">
+                        <button class="btn btn-success" onclick="createBackup()">💾 Criar Backup Agora</button>
+                        <button class="btn btn-info" onclick="refreshBackups()">🔄 Atualizar Lista</button>
+                    </div>
+                    
+                    <div class="upload-area" id="uploadArea">
+                        <p>📁 Arraste um arquivo de backup (.db) aqui ou</p>
+                        <input type="file" id="backupFile" accept=".db" style="display: none;" onchange="uploadBackup()">
+                        <button class="btn" onclick="document.getElementById('backupFile').click()">📂 Selecionar Arquivo</button>
+                    </div>
+                    
+                    <div class="table-container">
+                        <div class="table-header">
+                            <h3>📋 Backups Disponíveis</h3>
+                        </div>
+                        <div class="backup-list" id="backupList">
+                            <!-- Lista de backups será carregada aqui -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Settings Tab -->
+            <div id="settings" class="tab-content">
+                <div class="backup-section">
+                    <h3>⚙️ Configurações do Sistema</h3>
+                    
+                    <div style="margin-bottom: 30px;">
+                        <h4>🔑 Trocar Senha do Admin</h4>
+                        <form id="changePasswordForm" style="max-width: 400px;">
+                            <div class="form-group">
+                                <label>Senha Atual:</label>
+                                <input type="password" id="currentPassword" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Nova Senha:</label>
+                                <input type="password" id="newPassword" required minlength="8">
+                            </div>
+                            <div class="form-group">
+                                <label>Confirmar Nova Senha:</label>
+                                <input type="password" id="confirmPassword" required minlength="8">
+                            </div>
+                            <button type="submit" class="btn btn-warning">🔄 Alterar Senha</button>
+                        </form>
+                    </div>
+                    
+                    <div>
+                        <h4>🌎 Informações do Sistema</h4>
+                        <p><strong>Fuso Horário:</strong> Brasil (UTC-3)</p>
+                        <p><strong>Versão:</strong> SpiderPrint v2.0</p>
+                        <p><strong>Banco de Dados:</strong> SQLite</p>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
     
-    <!-- Modal Novo Usuário -->
+    <!-- Modal Usuário -->
     <div id="userModal" class="modal">
         <div class="modal-content">
             <span class="close" onclick="closeUserModal()">&times;</span>
@@ -777,8 +911,17 @@ def dashboard():
                     <small id="passwordHelp" style="color: #666; font-size: 12px;">Deixe em branco para manter a senha atual (apenas na edição)</small>
                 </div>
                 <div class="form-group">
+                    <label for="accessLevel">Nível de Acesso:</label>
+                    <select id="accessLevel" name="accessLevel">
+                        <option value="Básico">Básico</option>
+                        <option value="Avançado">Avançado</option>
+                        <option value="Completo">Completo</option>
+                        <option value="Admin">Admin (Vitalício)</option>
+                    </select>
+                </div>
+                <div class="form-group" id="durationGroup">
                     <label for="duration">Duração da Licença (dias):</label>
-                    <input type="number" id="duration" name="duration" value="30" min="1" required>
+                    <input type="number" id="duration" name="duration" value="30" min="1">
                 </div>
                 <div class="form-group">
                     <label for="licenseType">Tipo de Licença:</label>
@@ -789,14 +932,6 @@ def dashboard():
                         <option value="Vitalícia">Vitalícia</option>
                     </select>
                 </div>
-                <div class="form-group">
-                    <label for="accessLevel">Nível de Acesso:</label>
-                    <select id="accessLevel" name="accessLevel">
-                        <option value="Básico">🔵 Básico - Funcionalidades essenciais</option>
-                        <option value="Avançado">🟠 Avançado - Básico + recursos avançados</option>
-                        <option value="Completo">🟢 Completo - Acesso total</option>
-                    </select>
-                </div>
                 <div style="text-align: right; margin-top: 30px;">
                     <button type="button" class="btn" onclick="closeUserModal()">Cancelar</button>
                     <button type="submit" class="btn btn-success" id="userSubmitBtn">Criar Usuário</button>
@@ -805,17 +940,258 @@ def dashboard():
         </div>
     </div>
     
+    <!-- Modal Staff -->
+    <div id="staffModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeStaffModal()">&times;</span>
+            <h2 id="staffModalTitle">Criar Novo Staff</h2>
+            <form id="staffForm">
+                <input type="hidden" id="staffId" name="staffId">
+                <div class="form-group">
+                    <label for="staffUsername">Usuário:</label>
+                    <input type="text" id="staffUsername" name="username" required>
+                </div>
+                <div class="form-group">
+                    <label for="staffEmail">Email:</label>
+                    <input type="email" id="staffEmail" name="email" required>
+                </div>
+                <div class="form-group">
+                    <label for="staffPassword">Senha:</label>
+                    <input type="password" id="staffPassword" name="password" required minlength="6">
+                </div>
+                <div class="form-group">
+                    <label for="staffType">Tipo de Staff:</label>
+                    <select id="staffType" name="staffType" required>
+                        <option value="">Selecione...</option>
+                        <option value="Vendedor">Vendedor</option>
+                        <option value="Técnico">Técnico</option>
+                    </select>
+                </div>
+                <div style="text-align: right; margin-top: 30px;">
+                    <button type="button" class="btn" onclick="closeStaffModal()">Cancelar</button>
+                    <button type="submit" class="btn btn-success" id="staffSubmitBtn">Criar Staff</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
     <script>
+        let currentUser = null;
         let editingUserId = null;
+        let editingStaffId = null;
+        let usersData = [];
+        let staffData = [];
+        let logsData = [];
         
-        // Logout
+        // Login
+        document.getElementById('loginForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const username = document.getElementById('loginUsername').value;
+            const password = document.getElementById('loginPassword').value;
+            
+            fetch('/api/admin/login', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ username, password })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    currentUser = data.username;
+                    document.getElementById('currentUser').textContent = currentUser;
+                    document.getElementById('loginPage').style.display = 'none';
+                    document.getElementById('dashboardPage').style.display = 'block';
+                    loadAllData();
+                } else {
+                    showError(data.error || 'Credenciais inválidas');
+                }
+            })
+            .catch(error => {
+                console.error('Erro:', error);
+                showError('Erro de conexão');
+            });
+        });
+        
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            setTimeout(() => {
+                errorDiv.style.display = 'none';
+            }, 5000);
+        }
+        
         function logout() {
-            if (confirm('Tem certeza que deseja sair do dashboard?')) {
-                window.location.href = '/admin/logout';
+            currentUser = null;
+            document.getElementById('loginPage').style.display = 'flex';
+            document.getElementById('dashboardPage').style.display = 'none';
+            document.getElementById('loginForm').reset();
+        }
+        
+        // Tabs
+        function showTab(tabName) {
+            // Hide all tabs
+            const tabs = document.querySelectorAll('.tab-content');
+            tabs.forEach(tab => tab.classList.remove('active'));
+            
+            // Hide all tab buttons
+            const buttons = document.querySelectorAll('.tab-button');
+            buttons.forEach(btn => btn.classList.remove('active'));
+            
+            // Show selected tab
+            document.getElementById(tabName).classList.add('active');
+            event.target.classList.add('active');
+            
+            // Load data for specific tabs
+            if (tabName === 'users') {
+                loadUsers();
+            } else if (tabName === 'staff') {
+                loadStaff();
+            } else if (tabName === 'logs') {
+                loadLogs();
+            } else if (tabName === 'backup') {
+                loadBackups();
             }
         }
         
-        // Funções do Modal
+        // Load all data
+        function loadAllData() {
+            loadStats();
+            loadUsers();
+            loadStaff();
+            loadLogs();
+        }
+        
+        // Stats
+        function loadStats() {
+            fetch('/api/stats')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('totalUsers').textContent = data.total_users || 0;
+                    document.getElementById('activeUsers').textContent = data.active_users || 0;
+                    document.getElementById('todayLogins').textContent = data.today_logins || 0;
+                    document.getElementById('activeLicenses').textContent = data.active_licenses || 0;
+                    document.getElementById('expiringLicenses').textContent = data.expiring_soon || 0;
+                    document.getElementById('totalStaff').textContent = data.total_staff || 0;
+                })
+                .catch(error => console.error('Erro ao carregar estatísticas:', error));
+        }
+        
+        // Users
+        function loadUsers() {
+            fetch('/api/users')
+                .then(response => response.json())
+                .then(data => {
+                    usersData = data;
+                    renderUsers(data);
+                })
+                .catch(error => console.error('Erro ao carregar usuários:', error));
+        }
+        
+        function renderUsers(users) {
+            const tbody = document.getElementById('usersTableBody');
+            if (!users || users.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #666;">Nenhum usuário encontrado</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = users.map(user => {
+                const isExpired = user.expires_at && new Date(user.expires_at) < new Date();
+                const statusClass = !user.is_active ? 'status-inactive' : (isExpired ? 'status-expired' : 'status-active');
+                const statusText = !user.is_active ? 'Inativo' : (isExpired ? 'Expirado' : 'Ativo');
+                
+                const hardwareDisplay = user.hardware_id ? 
+                    `<div class="hardware-id">${user.hardware_id.substring(0, 12)}...</div>` : 
+                    '<span style="color: #999;">Não vinculado</span>';
+                
+                const expiresDisplay = user.expires_at ? 
+                    new Date(user.expires_at).toLocaleDateString('pt-BR') : 
+                    '<span style="color: #28a745;">Nunca</span>';
+                
+                return `
+                    <tr>
+                        <td><strong>${user.username}</strong></td>
+                        <td>${user.email}</td>
+                        <td><span class="hardware-id">${user.access_level || 'Básico'}</span></td>
+                        <td>${user.license_type}</td>
+                        <td>${expiresDisplay}</td>
+                        <td><span class="${statusClass}">${statusText}</span></td>
+                        <td>${hardwareDisplay}</td>
+                        <td>
+                            <button class="btn btn-sm btn-info" onclick="openUserModal(${user.id})">✏️</button>
+                            <button class="btn btn-sm ${user.is_active ? 'btn-warning' : 'btn-success'}" 
+                                    onclick="toggleUserStatus(${user.id}, ${user.is_active})">
+                                ${user.is_active ? '⏸️' : '▶️'}
+                            </button>
+                            ${user.hardware_id ? `<button class="btn btn-sm btn-warning" onclick="removeHardware(${user.id})">🔧</button>` : ''}
+                            <button class="btn btn-sm btn-danger" onclick="deleteUser(${user.id}, '${user.username}')">🗑️</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+        
+        function filterUsers() {
+            const search = document.getElementById('userSearch').value.toLowerCase();
+            const levelFilter = document.getElementById('userLevelFilter').value;
+            const statusFilter = document.getElementById('userStatusFilter').value;
+            
+            let filtered = usersData.filter(user => {
+                const matchesSearch = user.username.toLowerCase().includes(search) || 
+                                    user.email.toLowerCase().includes(search);
+                
+                const matchesLevel = !levelFilter || user.access_level === levelFilter;
+                
+                let matchesStatus = true;
+                if (statusFilter === 'active') {
+                    matchesStatus = user.is_active && (!user.expires_at || new Date(user.expires_at) > new Date());
+                } else if (statusFilter === 'inactive') {
+                    matchesStatus = !user.is_active;
+                } else if (statusFilter === 'expired') {
+                    matchesStatus = user.expires_at && new Date(user.expires_at) < new Date();
+                }
+                
+                return matchesSearch && matchesLevel && matchesStatus;
+            });
+            
+            renderUsers(filtered);
+        }
+        
+        function sortUsers(column) {
+            usersData.sort((a, b) => {
+                if (a[column] < b[column]) return -1;
+                if (a[column] > b[column]) return 1;
+                return 0;
+            });
+            renderUsers(usersData);
+        }
+        
+        function exportUsers() {
+            const csv = [
+                ['Usuário', 'Email', 'Nível', 'Licença', 'Expira', 'Status', 'Hardware ID'],
+                ...usersData.map(user => [
+                    user.username,
+                    user.email,
+                    user.access_level || 'Básico',
+                    user.license_type,
+                    user.expires_at || 'Nunca',
+                    user.is_active ? 'Ativo' : 'Inativo',
+                    user.hardware_id || 'Não vinculado'
+                ])
+            ].map(row => row.join(',')).join('\\n');
+            
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `usuarios_${new Date().toISOString().split('T')[0]}.csv`;
+            a.click();
+        }
+        
+        // User Modal
         function openUserModal(userId = null) {
             editingUserId = userId;
             const modal = document.getElementById('userModal');
@@ -823,24 +1199,33 @@ def dashboard():
             const submitBtn = document.getElementById('userSubmitBtn');
             const passwordHelp = document.getElementById('passwordHelp');
             const passwordField = document.getElementById('password');
+            const durationGroup = document.getElementById('durationGroup');
+            const accessLevel = document.getElementById('accessLevel');
             
             if (userId) {
-                // Modo edição
                 title.textContent = 'Editar Usuário';
                 submitBtn.textContent = 'Salvar Alterações';
                 passwordHelp.style.display = 'block';
                 passwordField.required = false;
-                
-                // Carregar dados do usuário
                 loadUserForEdit(userId);
             } else {
-                // Modo criação
                 title.textContent = 'Criar Novo Usuário';
                 submitBtn.textContent = 'Criar Usuário';
                 passwordHelp.style.display = 'none';
                 passwordField.required = true;
                 document.getElementById('userForm').reset();
+                document.getElementById('duration').value = 30;
             }
+            
+            // Handle Admin level
+            accessLevel.addEventListener('change', function() {
+                if (this.value === 'Admin') {
+                    durationGroup.style.display = 'none';
+                    document.getElementById('licenseType').value = 'Vitalícia';
+                } else {
+                    durationGroup.style.display = 'block';
+                }
+            });
             
             modal.style.display = 'block';
         }
@@ -852,177 +1237,26 @@ def dashboard():
         }
         
         function loadUserForEdit(userId) {
-            fetch(`/api/users/${userId}`)
-                .then(response => response.json())
-                .then(user => {
-                    document.getElementById('userId').value = user.id;
-                    document.getElementById('username').value = user.username;
-                    document.getElementById('email').value = user.email;
-                    document.getElementById('licenseType').value = user.license_type;
-                    document.getElementById('accessLevel').value = user.access_level || 'Básico';
-                    
-                    // Calcular duração restante
-                    if (user.expires_at) {
-                        const expiresAt = new Date(user.expires_at);
-                        const now = new Date();
-                        const daysRemaining = Math.ceil((expiresAt - now) / (1000 * 60 * 60 * 24));
-                        document.getElementById('duration').value = Math.max(1, daysRemaining);
-                    } else {
-                        document.getElementById('duration').value = 365; // Vitalícia
-                    }
-                })
-                .catch(error => {
-                    console.error('Erro ao carregar usuário:', error);
-                    alert('Erro ao carregar dados do usuário');
-                });
-        }
-        
-        function toggleUserStatus(userId, currentStatus) {
-            const action = currentStatus ? 'desativar' : 'ativar';
-            const newStatus = !currentStatus;
-            
-            if (confirm(`Tem certeza que deseja ${action} este usuário?`)) {
-                fetch(`/api/users/${userId}/status`, {
-                    method: 'PUT',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ is_active: newStatus })
-                })
-                .then(response => {
-                    if (response.ok) {
-                        alert(`Usuário ${action}do com sucesso!`);
-                        loadUsers();
-                        loadStats();
-                    } else {
-                        throw new Error(`Erro ao ${action} usuário`);
-                    }
-                })
-                .catch(error => {
-                    console.error('Erro:', error);
-                    alert(`Erro ao ${action} usuário: ` + error.message);
-                });
+            const user = usersData.find(u => u.id === userId);
+            if (user) {
+                document.getElementById('userId').value = user.id;
+                document.getElementById('username').value = user.username;
+                document.getElementById('email').value = user.email;
+                document.getElementById('accessLevel').value = user.access_level || 'Básico';
+                document.getElementById('licenseType').value = user.license_type;
+                
+                if (user.access_level === 'Admin') {
+                    document.getElementById('durationGroup').style.display = 'none';
+                } else if (user.expires_at) {
+                    const expiresAt = new Date(user.expires_at);
+                    const now = new Date();
+                    const daysRemaining = Math.ceil((expiresAt - now) / (1000 * 60 * 60 * 24));
+                    document.getElementById('duration').value = Math.max(1, daysRemaining);
+                }
             }
         }
         
-        function deleteUser(userId, username) {
-            if (confirm(`Tem certeza que deseja EXCLUIR permanentemente o usuário "${username}"?\\n\\nEsta ação não pode ser desfeita!`)) {
-                fetch(`/api/users/${userId}`, {
-                    method: 'DELETE'
-                })
-                .then(response => {
-                    if (response.ok) {
-                        alert('Usuário excluído com sucesso!');
-                        loadUsers();
-                        loadStats();
-                    } else {
-                        throw new Error('Erro ao excluir usuário');
-                    }
-                })
-                .catch(error => {
-                    console.error('Erro:', error);
-                    alert('Erro ao excluir usuário: ' + error.message);
-                });
-            }
-        }
-        
-        // Fechar modal clicando fora
-        window.onclick = function(event) {
-            const modal = document.getElementById('userModal');
-            if (event.target == modal) {
-                closeUserModal();
-            }
-        }
-        
-        // Carregar dados
-        function loadStats() {
-            fetch('/api/stats')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('totalUsers').textContent = data.total_users || 0;
-                    document.getElementById('activeUsers').textContent = data.active_users || 0;
-                    document.getElementById('basicUsers').textContent = data.basic_users || 0;
-                    document.getElementById('advancedUsers').textContent = data.advanced_users || 0;
-                    document.getElementById('completeUsers').textContent = data.complete_users || 0;
-                    document.getElementById('todayLogins').textContent = data.today_logins || 0;
-                })
-                .catch(error => console.error('Erro ao carregar estatísticas:', error));
-        }
-        
-        function loadUsers() {
-            fetch('/api/users')
-                .then(response => response.json())
-                .then(users => {
-                    const userList = document.getElementById('userList');
-                    if (Array.isArray(users) && users.length > 0) {
-                        userList.innerHTML = users.map(user => {
-                            const statusClass = user.is_active ? 'status-active' : 'status-inactive';
-                            const statusText = user.is_active ? 'Ativo' : 'Inativo';
-                            const toggleText = user.is_active ? 'Desativar' : 'Ativar';
-                            const toggleClass = user.is_active ? 'btn-warning' : 'btn-success';
-                            
-                            const accessLevel = user.access_level || 'Básico';
-                            const accessClass = `access-${accessLevel.toLowerCase()}`;
-                            
-                            const hardwareDisplay = user.hardware_id ? 
-                                `<div class="hardware-id">🔗 Hardware: ${user.hardware_id.substring(0, 16)}...</div>` : 
-                                '<div class="hardware-id">🔗 Hardware: Não vinculado</div>';
-                            
-                            return `
-                                <div class="user-item">
-                                    <div class="user-info">
-                                        <h4>${user.username} <span class="${statusClass}">(${statusText})</span><span class="access-level ${accessClass}">${accessLevel}</span></h4>
-                                        <p>${user.email} - ${user.license_type}</p>
-                                        <p>Expira: ${user.expires_at ? new Date(user.expires_at).toLocaleDateString('pt-BR') : 'Nunca'}</p>
-                                        ${hardwareDisplay}
-                                    </div>
-                                    <div class="user-actions">
-                                        <button class="btn btn-sm" onclick="openUserModal(${user.id})">✏️ Editar</button>
-                                        <button class="btn btn-sm ${toggleClass}" onclick="toggleUserStatus(${user.id}, ${user.is_active})">${toggleText}</button>
-                                        <button class="btn btn-sm btn-danger" onclick="deleteUser(${user.id}, '${user.username}')">🗑️ Excluir</button>
-                                    </div>
-                                </div>
-                            `;
-                        }).join('');
-                    } else {
-                        userList.innerHTML = '<p style="text-align: center; color: #666; padding: 20px;">Nenhum usuário cadastrado</p>';
-                    }
-                })
-                .catch(error => {
-                    console.error('Erro ao carregar usuários:', error);
-                    document.getElementById('userList').innerHTML = '<p style="text-align: center; color: #666; padding: 20px;">Erro ao carregar usuários</p>';
-                });
-        }
-        
-        function loadLogs() {
-            fetch('/api/logs?per_page=20')
-                .then(response => response.json())
-                .then(logs => {
-                    const logsList = document.getElementById('logsList');
-                    if (Array.isArray(logs) && logs.length > 0) {
-                        logsList.innerHTML = logs.map(log => {
-                            const hardwareDisplay = log.hardware_id ? 
-                                `<div class="log-hardware">🔗 Hardware: ${log.hardware_id.substring(0, 16)}...</div>` : '';
-                            
-                            return `
-                                <div class="log-item">
-                                    <span class="log-time">${new Date(log.timestamp).toLocaleString('pt-BR')}</span>
-                                    <span class="log-action">${log.username} - ${log.action}</span>
-                                    ${hardwareDisplay}
-                                </div>
-                            `;
-                        }).join('');
-                    } else {
-                        logsList.innerHTML = '<p style="text-align: center; color: #666; padding: 20px;">Nenhum log disponível</p>';
-                    }
-                })
-                .catch(error => {
-                    console.error('Erro ao carregar logs:', error);
-                    document.getElementById('logsList').innerHTML = '<p style="text-align: center; color: #666; padding: 20px;">Erro ao carregar logs</p>';
-                });
-        }
-        
-        // Criar/Editar usuário
+        // User Form Submit
         document.getElementById('userForm').addEventListener('submit', function(e) {
             e.preventDefault();
             
@@ -1030,12 +1264,15 @@ def dashboard():
             const userData = {
                 username: formData.get('username'),
                 email: formData.get('email'),
-                duration: parseInt(formData.get('duration')),
-                license_type: formData.get('licenseType'),
-                access_level: formData.get('accessLevel')
+                access_level: formData.get('accessLevel'),
+                license_type: formData.get('licenseType')
             };
             
-            // Adicionar senha apenas se foi preenchida
+            // Add duration only if not Admin
+            if (userData.access_level !== 'Admin') {
+                userData.duration = parseInt(formData.get('duration'));
+            }
+            
             const password = formData.get('password');
             if (password) {
                 userData.password = password;
@@ -1052,83 +1289,749 @@ def dashboard():
                 },
                 body: JSON.stringify(userData)
             })
-            .then(response => {
-                if (response.ok) {
-                    return response.json();
-                } else {
-                    throw new Error(isEditing ? 'Erro ao editar usuário' : 'Erro ao criar usuário');
-                }
-            })
+            .then(response => response.json())
             .then(data => {
-                alert(isEditing ? 'Usuário editado com sucesso!' : 'Usuário criado com sucesso!');
-                closeUserModal();
-                loadUsers();
-                loadStats();
+                if (data.error) {
+                    alert('Erro: ' + data.error);
+                } else {
+                    alert(isEditing ? 'Usuário editado com sucesso!' : 'Usuário criado com sucesso!');
+                    closeUserModal();
+                    loadUsers();
+                    loadStats();
+                }
             })
             .catch(error => {
                 console.error('Erro:', error);
-                alert((isEditing ? 'Erro ao editar usuário: ' : 'Erro ao criar usuário: ') + error.message);
+                alert('Erro ao salvar usuário');
             });
         });
         
-        // Carregar dados iniciais
-        loadStats();
-        loadUsers();
-        loadLogs();
+        function toggleUserStatus(userId, currentStatus) {
+            const action = currentStatus ? 'desativar' : 'ativar';
+            if (confirm(`Tem certeza que deseja ${action} este usuário?`)) {
+                fetch(`/api/users/${userId}/status`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ is_active: !currentStatus })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Erro: ' + data.error);
+                    } else {
+                        loadUsers();
+                        loadStats();
+                    }
+                })
+                .catch(error => {
+                    console.error('Erro:', error);
+                    alert('Erro ao alterar status');
+                });
+            }
+        }
         
-        // Atualizar dados a cada 10 segundos
+        function removeHardware(userId) {
+            if (confirm('Tem certeza que deseja remover o hardware ID deste usuário? Isso permitirá que ele use o software em outro computador.')) {
+                fetch(`/api/hardware/remove/${userId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Erro: ' + data.error);
+                    } else {
+                        alert('Hardware ID removido com sucesso!');
+                        loadUsers();
+                    }
+                })
+                .catch(error => {
+                    console.error('Erro:', error);
+                    alert('Erro ao remover hardware ID');
+                });
+            }
+        }
+        
+        function deleteUser(userId, username) {
+            if (confirm(`Tem certeza que deseja excluir o usuário "${username}"? Esta ação não pode ser desfeita.`)) {
+                fetch(`/api/users/${userId}`, {
+                    method: 'DELETE'
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Erro: ' + data.error);
+                    } else {
+                        alert('Usuário excluído com sucesso!');
+                        loadUsers();
+                        loadStats();
+                    }
+                })
+                .catch(error => {
+                    console.error('Erro:', error);
+                    alert('Erro ao excluir usuário');
+                });
+            }
+        }
+        
+        // Staff Management
+        function loadStaff() {
+            fetch('/api/staff')
+                .then(response => response.json())
+                .then(data => {
+                    staffData = data;
+                    renderStaff(data);
+                })
+                .catch(error => console.error('Erro ao carregar staff:', error));
+        }
+        
+        function renderStaff(staff) {
+            const tbody = document.getElementById('staffTableBody');
+            if (!staff || staff.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #666;">Nenhum staff encontrado</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = staff.map(member => {
+                const statusClass = member.is_active ? 'status-active' : 'status-inactive';
+                const statusText = member.is_active ? 'Ativo' : 'Inativo';
+                
+                return `
+                    <tr>
+                        <td><strong>${member.username}</strong></td>
+                        <td>${member.email}</td>
+                        <td><span class="hardware-id">${member.staff_type}</span></td>
+                        <td>${new Date(member.created_at).toLocaleDateString('pt-BR')}</td>
+                        <td><span class="${statusClass}">${statusText}</span></td>
+                        <td>${member.created_users || 0}</td>
+                        <td>
+                            <button class="btn btn-sm btn-info" onclick="openStaffModal(${member.id})">✏️</button>
+                            <button class="btn btn-sm ${member.is_active ? 'btn-warning' : 'btn-success'}" 
+                                    onclick="toggleStaffStatus(${member.id}, ${member.is_active})">
+                                ${member.is_active ? '⏸️' : '▶️'}
+                            </button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteStaff(${member.id}, '${member.username}')">🗑️</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+        
+        function filterStaff() {
+            const search = document.getElementById('staffSearch').value.toLowerCase();
+            const typeFilter = document.getElementById('staffTypeFilter').value;
+            
+            let filtered = staffData.filter(member => {
+                const matchesSearch = member.username.toLowerCase().includes(search) || 
+                                    member.email.toLowerCase().includes(search);
+                const matchesType = !typeFilter || member.staff_type === typeFilter;
+                
+                return matchesSearch && matchesType;
+            });
+            
+            renderStaff(filtered);
+        }
+        
+        function openStaffModal(staffId = null) {
+            editingStaffId = staffId;
+            const modal = document.getElementById('staffModal');
+            const title = document.getElementById('staffModalTitle');
+            const submitBtn = document.getElementById('staffSubmitBtn');
+            
+            if (staffId) {
+                title.textContent = 'Editar Staff';
+                submitBtn.textContent = 'Salvar Alterações';
+                loadStaffForEdit(staffId);
+            } else {
+                title.textContent = 'Criar Novo Staff';
+                submitBtn.textContent = 'Criar Staff';
+                document.getElementById('staffForm').reset();
+            }
+            
+            modal.style.display = 'block';
+        }
+        
+        function closeStaffModal() {
+            document.getElementById('staffModal').style.display = 'none';
+            document.getElementById('staffForm').reset();
+            editingStaffId = null;
+        }
+        
+        function loadStaffForEdit(staffId) {
+            const member = staffData.find(s => s.id === staffId);
+            if (member) {
+                document.getElementById('staffId').value = member.id;
+                document.getElementById('staffUsername').value = member.username;
+                document.getElementById('staffEmail').value = member.email;
+                document.getElementById('staffType').value = member.staff_type;
+                document.getElementById('staffPassword').required = false;
+            }
+        }
+        
+        document.getElementById('staffForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData(e.target);
+            const staffData = {
+                username: formData.get('username'),
+                email: formData.get('email'),
+                staff_type: formData.get('staffType'),
+                password: formData.get('password')
+            };
+            
+            const isEditing = editingStaffId !== null;
+            const url = isEditing ? `/api/staff/${editingStaffId}` : '/api/staff';
+            const method = isEditing ? 'PUT' : 'POST';
+            
+            fetch(url, {
+                method: method,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(staffData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert('Erro: ' + data.error);
+                } else {
+                    alert(isEditing ? 'Staff editado com sucesso!' : 'Staff criado com sucesso!');
+                    closeStaffModal();
+                    loadStaff();
+                    loadStats();
+                }
+            })
+            .catch(error => {
+                console.error('Erro:', error);
+                alert('Erro ao salvar staff');
+            });
+        });
+        
+        function toggleStaffStatus(staffId, currentStatus) {
+            const action = currentStatus ? 'desativar' : 'ativar';
+            if (confirm(`Tem certeza que deseja ${action} este staff?`)) {
+                fetch(`/api/staff/${staffId}/status`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ is_active: !currentStatus })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Erro: ' + data.error);
+                    } else {
+                        loadStaff();
+                        loadStats();
+                    }
+                })
+                .catch(error => {
+                    console.error('Erro:', error);
+                    alert('Erro ao alterar status');
+                });
+            }
+        }
+        
+        function deleteStaff(staffId, username) {
+            if (confirm(`Tem certeza que deseja excluir o staff "${username}"? Esta ação não pode ser desfeita.`)) {
+                fetch(`/api/staff/${staffId}`, {
+                    method: 'DELETE'
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Erro: ' + data.error);
+                    } else {
+                        alert('Staff excluído com sucesso!');
+                        loadStaff();
+                        loadStats();
+                    }
+                })
+                .catch(error => {
+                    console.error('Erro:', error);
+                    alert('Erro ao excluir staff');
+                });
+            }
+        }
+        
+        // Logs
+        function loadLogs() {
+            fetch('/api/logs?per_page=100')
+                .then(response => response.json())
+                .then(data => {
+                    logsData = data;
+                    renderLogs(data);
+                })
+                .catch(error => console.error('Erro ao carregar logs:', error));
+        }
+        
+        function renderLogs(logs) {
+            const tbody = document.getElementById('logsTableBody');
+            if (!logs || logs.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #666;">Nenhum log encontrado</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = logs.map(log => {
+                const actionColor = getActionColor(log.action);
+                const hardwareDisplay = log.hardware_id ? 
+                    `<div class="hardware-id">${log.hardware_id.substring(0, 12)}...</div>` : 
+                    '<span style="color: #999;">-</span>';
+                
+                return `
+                    <tr>
+                        <td>${new Date(log.timestamp).toLocaleString('pt-BR')}</td>
+                        <td><strong>${log.username}</strong></td>
+                        <td><span style="color: ${actionColor};">${log.action}</span></td>
+                        <td>${log.ip_address || '-'}</td>
+                        <td>${hardwareDisplay}</td>
+                        <td>${log.details || '-'}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+        
+        function getActionColor(action) {
+            if (action.includes('login')) return '#28a745';
+            if (action.includes('logout')) return '#6c757d';
+            if (action.includes('criado') || action.includes('created')) return '#007bff';
+            if (action.includes('editado') || action.includes('updated')) return '#ffc107';
+            if (action.includes('excluído') || action.includes('deleted')) return '#dc3545';
+            return '#333';
+        }
+        
+        function filterLogs() {
+            const search = document.getElementById('logSearch').value.toLowerCase();
+            const dateFilter = document.getElementById('logDateFilter').value;
+            const actionFilter = document.getElementById('logActionFilter').value;
+            
+            let filtered = logsData.filter(log => {
+                const matchesSearch = log.username.toLowerCase().includes(search) || 
+                                    log.action.toLowerCase().includes(search) ||
+                                    (log.details && log.details.toLowerCase().includes(search));
+                
+                const matchesDate = !dateFilter || log.timestamp.startsWith(dateFilter);
+                const matchesAction = !actionFilter || log.action.toLowerCase().includes(actionFilter);
+                
+                return matchesSearch && matchesDate && matchesAction;
+            });
+            
+            renderLogs(filtered);
+        }
+        
+        function exportLogs() {
+            const csv = [
+                ['Data/Hora', 'Usuário', 'Ação', 'IP', 'Hardware', 'Detalhes'],
+                ...logsData.map(log => [
+                    new Date(log.timestamp).toLocaleString('pt-BR'),
+                    log.username,
+                    log.action,
+                    log.ip_address || '',
+                    log.hardware_id || '',
+                    log.details || ''
+                ])
+            ].map(row => row.join(',')).join('\\n');
+            
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `logs_${new Date().toISOString().split('T')[0]}.csv`;
+            a.click();
+        }
+        
+        function clearOldLogs() {
+            if (confirm('Tem certeza que deseja limpar logs antigos (mais de 30 dias)? Esta ação não pode ser desfeita.')) {
+                fetch('/api/logs/cleanup', {
+                    method: 'POST'
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Erro: ' + data.error);
+                    } else {
+                        alert(`${data.deleted_count} logs antigos foram removidos.`);
+                        loadLogs();
+                    }
+                })
+                .catch(error => {
+                    console.error('Erro:', error);
+                    alert('Erro ao limpar logs');
+                });
+            }
+        }
+        
+        // Backup
+        function loadBackups() {
+            fetch('/api/backup/list')
+                .then(response => response.json())
+                .then(data => {
+                    renderBackups(data.backups || []);
+                })
+                .catch(error => console.error('Erro ao carregar backups:', error));
+        }
+        
+        function renderBackups(backups) {
+            const container = document.getElementById('backupList');
+            if (!backups || backups.length === 0) {
+                container.innerHTML = '<p style="text-align: center; color: #666; padding: 20px;">Nenhum backup encontrado</p>';
+                return;
+            }
+            
+            container.innerHTML = backups.map(backup => `
+                <div class="backup-item">
+                    <div class="backup-info">
+                        <div class="backup-name">${backup.name}</div>
+                        <div class="backup-details">
+                            📅 ${new Date(backup.created_at).toLocaleString('pt-BR')} | 
+                            📊 ${(backup.size / 1024).toFixed(1)} KB
+                        </div>
+                    </div>
+                    <div class="backup-actions-btn">
+                        <button class="btn btn-sm btn-info" onclick="downloadBackup('${backup.name}')">📥 Download</button>
+                        <button class="btn btn-sm btn-warning" onclick="restoreBackup('${backup.name}')">🔄 Restaurar</button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteBackup('${backup.name}')">🗑️ Excluir</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        function createBackup() {
+            if (confirm('Criar um novo backup do banco de dados?')) {
+                fetch('/api/backup/create', {
+                    method: 'POST'
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Erro: ' + data.error);
+                    } else {
+                        alert('Backup criado com sucesso!');
+                        loadBackups();
+                    }
+                })
+                .catch(error => {
+                    console.error('Erro:', error);
+                    alert('Erro ao criar backup');
+                });
+            }
+        }
+        
+        function downloadBackup(filename) {
+            window.open(`/api/backup/download/${filename}`, '_blank');
+        }
+        
+        function restoreBackup(filename) {
+            if (confirm(`Tem certeza que deseja restaurar o backup "${filename}"? O banco atual será substituído e um backup automático será criado.`)) {
+                fetch('/api/backup/restore', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ filename: filename })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Erro: ' + data.error);
+                    } else {
+                        alert('Backup restaurado com sucesso! A página será recarregada.');
+                        location.reload();
+                    }
+                })
+                .catch(error => {
+                    console.error('Erro:', error);
+                    alert('Erro ao restaurar backup');
+                });
+            }
+        }
+        
+        function deleteBackup(filename) {
+            if (confirm(`Tem certeza que deseja excluir o backup "${filename}"? Esta ação não pode ser desfeita.`)) {
+                fetch(`/api/backup/delete/${filename}`, {
+                    method: 'DELETE'
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Erro: ' + data.error);
+                    } else {
+                        alert('Backup excluído com sucesso!');
+                        loadBackups();
+                    }
+                })
+                .catch(error => {
+                    console.error('Erro:', error);
+                    alert('Erro ao excluir backup');
+                });
+            }
+        }
+        
+        function refreshBackups() {
+            loadBackups();
+        }
+        
+        function uploadBackup() {
+            const fileInput = document.getElementById('backupFile');
+            const file = fileInput.files[0];
+            
+            if (!file) return;
+            
+            if (!file.name.endsWith('.db')) {
+                alert('Por favor, selecione um arquivo .db válido');
+                return;
+            }
+            
+            if (confirm(`Tem certeza que deseja restaurar o backup "${file.name}"? O banco atual será substituído.`)) {
+                const formData = new FormData();
+                formData.append('backup', file);
+                
+                fetch('/api/backup/upload', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Erro: ' + data.error);
+                    } else {
+                        alert('Backup restaurado com sucesso! A página será recarregada.');
+                        location.reload();
+                    }
+                })
+                .catch(error => {
+                    console.error('Erro:', error);
+                    alert('Erro ao fazer upload do backup');
+                });
+            }
+            
+            fileInput.value = '';
+        }
+        
+        // Drag and drop for backup upload
+        const uploadArea = document.getElementById('uploadArea');
+        
+        uploadArea.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        
+        uploadArea.addEventListener('dragleave', function(e) {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+        });
+        
+        uploadArea.addEventListener('drop', function(e) {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                const file = files[0];
+                if (file.name.endsWith('.db')) {
+                    document.getElementById('backupFile').files = files;
+                    uploadBackup();
+                } else {
+                    alert('Por favor, arraste apenas arquivos .db');
+                }
+            }
+        });
+        
+        // Settings
+        document.getElementById('changePasswordForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const currentPassword = document.getElementById('currentPassword').value;
+            const newPassword = document.getElementById('newPassword').value;
+            const confirmPassword = document.getElementById('confirmPassword').value;
+            
+            if (newPassword !== confirmPassword) {
+                alert('As senhas não coincidem');
+                return;
+            }
+            
+            if (newPassword.length < 8) {
+                alert('A nova senha deve ter pelo menos 8 caracteres');
+                return;
+            }
+            
+            fetch('/api/admin/change-password', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    current_password: currentPassword,
+                    new_password: newPassword
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert('Erro: ' + data.error);
+                } else {
+                    alert('Senha alterada com sucesso!');
+                    document.getElementById('changePasswordForm').reset();
+                }
+            })
+            .catch(error => {
+                console.error('Erro:', error);
+                alert('Erro ao alterar senha');
+            });
+        });
+        
+        // Auto refresh every 30 seconds
         setInterval(() => {
-            loadStats();
-            loadUsers();
-            loadLogs();
-        }, 10000);
+            if (currentUser) {
+                loadStats();
+            }
+        }, 30000);
     </script>
 </body>
 </html>
     '''
     return html
 
+# APIs
+
+@app.route('/api/admin/login', methods=['POST'])
+def admin_login():
+    """Login do admin"""
+    try:
+        data = request.get_json()
+        username = data.get('username')
+        password = data.get('password')
+        
+        if not username or not password:
+            return jsonify({'error': 'Username e senha são obrigatórios'}), 400
+        
+        # Verificar credenciais do admin
+        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+            # Log do login
+            conn = sqlite3.connect(DATABASE)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO access_logs (username, action, ip_address, details)
+                VALUES (?, ?, ?, ?)
+            """, (username, 'admin login', request.remote_addr, 'Dashboard administrativo'))
+            conn.commit()
+            conn.close()
+            
+            return jsonify({
+                'success': True,
+                'username': username,
+                'message': 'Login realizado com sucesso'
+            })
+        else:
+            return jsonify({'error': 'Credenciais inválidas'}), 401
+            
+    except Exception as e:
+        return jsonify({'error': f'Erro interno: {str(e)}'}), 500
+
+@app.route('/api/admin/change-password', methods=['POST'])
+def change_admin_password():
+    """Trocar senha do admin"""
+    try:
+        data = request.get_json()
+        current_password = data.get('current_password')
+        new_password = data.get('new_password')
+        
+        if not current_password or not new_password:
+            return jsonify({'error': 'Senha atual e nova senha são obrigatórias'}), 400
+        
+        if current_password != ADMIN_PASSWORD:
+            return jsonify({'error': 'Senha atual incorreta'}), 401
+        
+        if len(new_password) < 8:
+            return jsonify({'error': 'Nova senha deve ter pelo menos 8 caracteres'}), 400
+        
+        # Atualizar senha no banco
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        new_hash = hash_password(new_password)
+        cursor.execute("""
+            UPDATE users SET password_hash = ? WHERE username = ?
+        """, (new_hash, ADMIN_USERNAME))
+        
+        # Log da alteração
+        cursor.execute("""
+            INSERT INTO access_logs (username, action, ip_address, details)
+            VALUES (?, ?, ?, ?)
+        """, (ADMIN_USERNAME, 'password changed', request.remote_addr, 'Senha alterada via dashboard'))
+        
+        conn.commit()
+        conn.close()
+        
+        # Atualizar variável global (para esta sessão)
+        global ADMIN_PASSWORD
+        ADMIN_PASSWORD = new_password
+        
+        return jsonify({'message': 'Senha alterada com sucesso'})
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro interno: {str(e)}'}), 500
+
 @app.route('/api/stats')
 def get_stats():
     """Estatísticas do sistema"""
-    if not require_admin_login():
-        return jsonify({'error': 'Acesso negado'}), 401
-    
     try:
         conn = sqlite3.connect(DATABASE)
         cursor = conn.cursor()
         
         # Total de usuários
-        cursor.execute("SELECT COUNT(*) FROM users")
+        cursor.execute("SELECT COUNT(*) FROM users WHERE user_type != 'Admin'")
         total_users = cursor.fetchone()[0]
         
         # Usuários ativos (não expirados)
-        cursor.execute("SELECT COUNT(*) FROM users WHERE (expires_at > datetime('now') OR expires_at IS NULL) AND is_active = 1")
+        cursor.execute("""
+            SELECT COUNT(*) FROM users 
+            WHERE (expires_at > datetime('now') OR expires_at IS NULL) 
+            AND is_active = 1 AND user_type != 'Admin'
+        """)
         active_users = cursor.fetchone()[0]
         
-        # Usuários por nível de acesso
-        cursor.execute("SELECT COUNT(*) FROM users WHERE access_level = 'Básico'")
-        basic_users = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM users WHERE access_level = 'Avançado'")
-        advanced_users = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM users WHERE access_level = 'Completo'")
-        complete_users = cursor.fetchone()[0]
-        
-        # Logins hoje
-        cursor.execute("SELECT COUNT(*) FROM access_logs WHERE date(timestamp) = date('now') AND action = 'login'")
+        # Logins hoje (horário Brasil)
+        brazil_today = get_brazil_time().strftime('%Y-%m-%d')
+        cursor.execute("""
+            SELECT COUNT(*) FROM access_logs 
+            WHERE date(timestamp) = ? AND action LIKE '%login%'
+        """, (brazil_today,))
         today_logins = cursor.fetchone()[0]
+        
+        # Licenças ativas
+        cursor.execute("""
+            SELECT COUNT(*) FROM users 
+            WHERE (expires_at > datetime('now') OR expires_at IS NULL) 
+            AND is_active = 1 AND user_type != 'Admin'
+        """)
+        active_licenses = cursor.fetchone()[0]
+        
+        # Expirando em 7 dias
+        cursor.execute("""
+            SELECT COUNT(*) FROM users 
+            WHERE expires_at BETWEEN datetime('now') AND datetime('now', '+7 days')
+            AND is_active = 1 AND user_type != 'Admin'
+        """)
+        expiring_soon = cursor.fetchone()[0]
+        
+        # Total de staff
+        cursor.execute("SELECT COUNT(*) FROM staff WHERE is_active = 1")
+        total_staff = cursor.fetchone()[0]
         
         conn.close()
         
         return jsonify({
             'total_users': total_users,
             'active_users': active_users,
-            'basic_users': basic_users,
-            'advanced_users': advanced_users,
-            'complete_users': complete_users,
-            'today_logins': today_logins
+            'today_logins': today_logins,
+            'active_licenses': active_licenses,
+            'expiring_soon': expiring_soon,
+            'total_staff': total_staff
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1136,16 +2039,15 @@ def get_stats():
 @app.route('/api/users', methods=['GET'])
 def get_users():
     """Listar usuários"""
-    if not require_admin_login():
-        return jsonify({'error': 'Acesso negado'}), 401
-    
     try:
         conn = sqlite3.connect(DATABASE)
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, username, email, created_at, expires_at, license_type, access_level, is_active, last_login, hardware_id
+            SELECT id, username, email, created_at, expires_at, license_type, 
+                   access_level, user_type, is_active, last_login, hardware_id, created_by
             FROM users
+            WHERE user_type != 'Admin'
             ORDER BY created_at DESC
         """)
         
@@ -1158,10 +2060,12 @@ def get_users():
                 'created_at': row[3],
                 'expires_at': row[4],
                 'license_type': row[5],
-                'access_level': row[6] or 'Básico',
-                'is_active': row[7],
-                'last_login': row[8],
-                'hardware_id': row[9]
+                'access_level': row[6],
+                'user_type': row[7],
+                'is_active': row[8],
+                'last_login': row[9],
+                'hardware_id': row[10],
+                'created_by': row[11]
             })
         
         conn.close()
@@ -1172,15 +2076,13 @@ def get_users():
 @app.route('/api/users/<int:user_id>', methods=['GET'])
 def get_user(user_id):
     """Obter dados de um usuário específico"""
-    if not require_admin_login():
-        return jsonify({'error': 'Acesso negado'}), 401
-    
     try:
         conn = sqlite3.connect(DATABASE)
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, username, email, created_at, expires_at, license_type, access_level, is_active, last_login, hardware_id
+            SELECT id, username, email, created_at, expires_at, license_type, 
+                   access_level, user_type, is_active, last_login, hardware_id
             FROM users
             WHERE id = ?
         """, (user_id,))
@@ -1197,10 +2099,11 @@ def get_user(user_id):
             'created_at': row[3],
             'expires_at': row[4],
             'license_type': row[5],
-            'access_level': row[6] or 'Básico',
-            'is_active': row[7],
-            'last_login': row[8],
-            'hardware_id': row[9]
+            'access_level': row[6],
+            'user_type': row[7],
+            'is_active': row[8],
+            'last_login': row[9],
+            'hardware_id': row[10]
         }
         
         conn.close()
@@ -1211,9 +2114,6 @@ def get_user(user_id):
 @app.route('/api/users', methods=['POST'])
 def create_user():
     """Criar novo usuário"""
-    if not require_admin_login():
-        return jsonify({'error': 'Acesso negado'}), 401
-    
     try:
         data = request.get_json()
         
@@ -1224,9 +2124,9 @@ def create_user():
         username = data['username'].strip()
         email = data['email'].strip()
         password = data['password']
-        duration = data.get('duration', 30)
-        license_type = data.get('license_type', 'Trial')
         access_level = data.get('access_level', 'Básico')
+        license_type = data.get('license_type', 'Trial')
+        duration = data.get('duration', 30)
         
         # Validações básicas
         if len(username) < 3:
@@ -1238,13 +2138,10 @@ def create_user():
         if '@' not in email:
             return jsonify({'error': 'Email inválido'}), 400
         
-        if access_level not in ['Básico', 'Avançado', 'Completo']:
-            access_level = 'Básico'
-        
-        # Calcular data de expiração
+        # Calcular data de expiração (horário Brasil)
         expires_at = None
-        if license_type != 'Vitalícia' and duration > 0:
-            expires_at = (datetime.datetime.now() + datetime.timedelta(days=duration)).isoformat()
+        if access_level != 'Admin' and license_type != 'Vitalícia' and duration > 0:
+            expires_at = (get_brazil_time() + datetime.timedelta(days=duration)).isoformat()
         
         conn = sqlite3.connect(DATABASE)
         cursor = conn.cursor()
@@ -1255,14 +2152,25 @@ def create_user():
             conn.close()
             return jsonify({'error': 'Usuário ou email já existe'}), 400
         
+        # Definir tipo de usuário
+        user_type = 'Admin' if access_level == 'Admin' else 'Cliente'
+        
         # Criar usuário
         password_hash = hash_password(password)
         cursor.execute("""
-            INSERT INTO users (username, email, password_hash, expires_at, license_type, access_level)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (username, email, password_hash, expires_at, license_type, access_level))
+            INSERT INTO users (username, email, password_hash, expires_at, license_type, 
+                             access_level, user_type, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (username, email, password_hash, expires_at, license_type, access_level, user_type, 'admin'))
         
         user_id = cursor.lastrowid
+        
+        # Log da criação
+        cursor.execute("""
+            INSERT INTO access_logs (username, action, ip_address, details)
+            VALUES (?, ?, ?, ?)
+        """, ('admin', 'user created', request.remote_addr, f'Usuário {username} criado'))
+        
         conn.commit()
         conn.close()
         
@@ -1282,9 +2190,6 @@ def create_user():
 @app.route('/api/users/<int:user_id>', methods=['PUT'])
 def update_user(user_id):
     """Editar usuário existente"""
-    if not require_admin_login():
-        return jsonify({'error': 'Acesso negado'}), 401
-    
     try:
         data = request.get_json()
         
@@ -1295,9 +2200,9 @@ def update_user(user_id):
         username = data['username'].strip()
         email = data['email'].strip()
         password = data.get('password', '').strip()
-        duration = data.get('duration', 30)
-        license_type = data.get('license_type', 'Trial')
         access_level = data.get('access_level', 'Básico')
+        license_type = data.get('license_type', 'Trial')
+        duration = data.get('duration', 30)
         
         # Validações básicas
         if len(username) < 3:
@@ -1309,20 +2214,18 @@ def update_user(user_id):
         if '@' not in email:
             return jsonify({'error': 'Email inválido'}), 400
         
-        if access_level not in ['Básico', 'Avançado', 'Completo']:
-            access_level = 'Básico'
-        
-        # Calcular data de expiração
+        # Calcular data de expiração (horário Brasil)
         expires_at = None
-        if license_type != 'Vitalícia' and duration > 0:
-            expires_at = (datetime.datetime.now() + datetime.timedelta(days=duration)).isoformat()
+        if access_level != 'Admin' and license_type != 'Vitalícia' and duration > 0:
+            expires_at = (get_brazil_time() + datetime.timedelta(days=duration)).isoformat()
         
         conn = sqlite3.connect(DATABASE)
         cursor = conn.cursor()
         
         # Verificar se usuário existe
-        cursor.execute("SELECT id FROM users WHERE id = ?", (user_id,))
-        if not cursor.fetchone():
+        cursor.execute("SELECT username FROM users WHERE id = ?", (user_id,))
+        old_user = cursor.fetchone()
+        if not old_user:
             conn.close()
             return jsonify({'error': 'Usuário não encontrado'}), 404
         
@@ -1332,22 +2235,33 @@ def update_user(user_id):
             conn.close()
             return jsonify({'error': 'Usuário ou email já existe'}), 400
         
+        # Definir tipo de usuário
+        user_type = 'Admin' if access_level == 'Admin' else 'Cliente'
+        
         # Atualizar usuário
         if password:
             # Atualizar com nova senha
             password_hash = hash_password(password)
             cursor.execute("""
                 UPDATE users 
-                SET username = ?, email = ?, password_hash = ?, expires_at = ?, license_type = ?, access_level = ?
+                SET username = ?, email = ?, password_hash = ?, expires_at = ?, 
+                    license_type = ?, access_level = ?, user_type = ?
                 WHERE id = ?
-            """, (username, email, password_hash, expires_at, license_type, access_level, user_id))
+            """, (username, email, password_hash, expires_at, license_type, access_level, user_type, user_id))
         else:
             # Atualizar sem alterar senha
             cursor.execute("""
                 UPDATE users 
-                SET username = ?, email = ?, expires_at = ?, license_type = ?, access_level = ?
+                SET username = ?, email = ?, expires_at = ?, license_type = ?, 
+                    access_level = ?, user_type = ?
                 WHERE id = ?
-            """, (username, email, expires_at, license_type, access_level, user_id))
+            """, (username, email, expires_at, license_type, access_level, user_type, user_id))
+        
+        # Log da edição
+        cursor.execute("""
+            INSERT INTO access_logs (username, action, ip_address, details)
+            VALUES (?, ?, ?, ?)
+        """, ('admin', 'user updated', request.remote_addr, f'Usuário {old_user[0]} editado para {username}'))
         
         conn.commit()
         conn.close()
@@ -1368,9 +2282,6 @@ def update_user(user_id):
 @app.route('/api/users/<int:user_id>/status', methods=['PUT'])
 def update_user_status(user_id):
     """Ativar/Desativar usuário"""
-    if not require_admin_login():
-        return jsonify({'error': 'Acesso negado'}), 401
-    
     try:
         data = request.get_json()
         
@@ -1393,17 +2304,17 @@ def update_user_status(user_id):
         cursor.execute("UPDATE users SET is_active = ? WHERE id = ?", (is_active, user_id))
         
         # Log da ação
-        action = 'ativado' if is_active else 'desativado'
+        action = 'user activated' if is_active else 'user deactivated'
         cursor.execute("""
-            INSERT INTO access_logs (username, action, ip_address)
-            VALUES (?, ?, ?)
-        """, (f"admin:{session.get('admin_username', 'admin')}", f'usuário {user[0]} {action}', request.remote_addr))
+            INSERT INTO access_logs (username, action, ip_address, details)
+            VALUES (?, ?, ?, ?)
+        """, ('admin', action, request.remote_addr, f'Usuário {user[0]} {action}'))
         
         conn.commit()
         conn.close()
         
         return jsonify({
-            'message': f'Usuário {action} com sucesso',
+            'message': f'Usuário {"ativado" if is_active else "desativado"} com sucesso',
             'is_active': is_active
         })
         
@@ -1413,9 +2324,6 @@ def update_user_status(user_id):
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
 def delete_user(user_id):
     """Excluir usuário"""
-    if not require_admin_login():
-        return jsonify({'error': 'Acesso negado'}), 401
-    
     try:
         conn = sqlite3.connect(DATABASE)
         cursor = conn.cursor()
@@ -1432,9 +2340,9 @@ def delete_user(user_id):
         
         # Log da ação
         cursor.execute("""
-            INSERT INTO access_logs (username, action, ip_address)
-            VALUES (?, ?, ?)
-        """, (f"admin:{session.get('admin_username', 'admin')}", f'usuário {user[0]} excluído', request.remote_addr))
+            INSERT INTO access_logs (username, action, ip_address, details)
+            VALUES (?, ?, ?, ?)
+        """, ('admin', 'user deleted', request.remote_addr, f'Usuário {user[0]} excluído'))
         
         conn.commit()
         conn.close()
@@ -1444,20 +2352,310 @@ def delete_user(user_id):
     except Exception as e:
         return jsonify({'error': f'Erro interno: {str(e)}'}), 500
 
+@app.route('/api/hardware/remove/<int:user_id>', methods=['POST'])
+def remove_hardware(user_id):
+    """Remover hardware ID de um usuário"""
+    try:
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        
+        # Verificar se usuário existe
+        cursor.execute("SELECT username, hardware_id FROM users WHERE id = ?", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            conn.close()
+            return jsonify({'error': 'Usuário não encontrado'}), 404
+        
+        if not user[1]:
+            conn.close()
+            return jsonify({'error': 'Usuário não possui hardware vinculado'}), 400
+        
+        # Remover hardware ID
+        cursor.execute("UPDATE users SET hardware_id = NULL WHERE id = ?", (user_id,))
+        
+        # Log da ação
+        cursor.execute("""
+            INSERT INTO access_logs (username, action, ip_address, details)
+            VALUES (?, ?, ?, ?)
+        """, ('admin', 'hardware removed', request.remote_addr, f'Hardware removido do usuário {user[0]}'))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'message': 'Hardware ID removido com sucesso'})
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro interno: {str(e)}'}), 500
+
+# Staff APIs
+
+@app.route('/api/staff', methods=['GET'])
+def get_staff():
+    """Listar staff"""
+    try:
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT s.id, s.username, s.email, s.staff_type, s.created_at, s.is_active, s.created_by,
+                   COUNT(u.id) as created_users
+            FROM staff s
+            LEFT JOIN users u ON u.created_by = s.username
+            GROUP BY s.id, s.username, s.email, s.staff_type, s.created_at, s.is_active, s.created_by
+            ORDER BY s.created_at DESC
+        """)
+        
+        staff = []
+        for row in cursor.fetchall():
+            staff.append({
+                'id': row[0],
+                'username': row[1],
+                'email': row[2],
+                'staff_type': row[3],
+                'created_at': row[4],
+                'is_active': row[5],
+                'created_by': row[6],
+                'created_users': row[7]
+            })
+        
+        conn.close()
+        return jsonify(staff)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/staff', methods=['POST'])
+def create_staff():
+    """Criar novo staff"""
+    try:
+        data = request.get_json()
+        
+        # Validar dados obrigatórios
+        if not data or not all(k in data for k in ('username', 'email', 'password', 'staff_type')):
+            return jsonify({'error': 'Dados obrigatórios: username, email, password, staff_type'}), 400
+        
+        username = data['username'].strip()
+        email = data['email'].strip()
+        password = data['password']
+        staff_type = data['staff_type']
+        
+        # Validações básicas
+        if len(username) < 3:
+            return jsonify({'error': 'Username deve ter pelo menos 3 caracteres'}), 400
+        
+        if len(password) < 6:
+            return jsonify({'error': 'Senha deve ter pelo menos 6 caracteres'}), 400
+        
+        if '@' not in email:
+            return jsonify({'error': 'Email inválido'}), 400
+        
+        if staff_type not in ['Vendedor', 'Técnico']:
+            return jsonify({'error': 'Tipo de staff deve ser Vendedor ou Técnico'}), 400
+        
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        
+        # Verificar se staff já existe
+        cursor.execute("SELECT id FROM staff WHERE username = ? OR email = ?", (username, email))
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({'error': 'Usuário ou email já existe'}), 400
+        
+        # Criar staff
+        password_hash = hash_password(password)
+        cursor.execute("""
+            INSERT INTO staff (username, email, password_hash, staff_type, created_by)
+            VALUES (?, ?, ?, ?, ?)
+        """, (username, email, password_hash, staff_type, 'admin'))
+        
+        staff_id = cursor.lastrowid
+        
+        # Log da criação
+        cursor.execute("""
+            INSERT INTO access_logs (username, action, ip_address, details)
+            VALUES (?, ?, ?, ?)
+        """, ('admin', 'staff created', request.remote_addr, f'Staff {username} ({staff_type}) criado'))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'id': staff_id,
+            'username': username,
+            'email': email,
+            'staff_type': staff_type,
+            'message': 'Staff criado com sucesso'
+        }), 201
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro interno: {str(e)}'}), 500
+
+@app.route('/api/staff/<int:staff_id>', methods=['PUT'])
+def update_staff(staff_id):
+    """Editar staff existente"""
+    try:
+        data = request.get_json()
+        
+        # Validar dados obrigatórios
+        if not data or not all(k in data for k in ('username', 'email', 'staff_type')):
+            return jsonify({'error': 'Dados obrigatórios: username, email, staff_type'}), 400
+        
+        username = data['username'].strip()
+        email = data['email'].strip()
+        password = data.get('password', '').strip()
+        staff_type = data['staff_type']
+        
+        # Validações básicas
+        if len(username) < 3:
+            return jsonify({'error': 'Username deve ter pelo menos 3 caracteres'}), 400
+        
+        if password and len(password) < 6:
+            return jsonify({'error': 'Senha deve ter pelo menos 6 caracteres'}), 400
+        
+        if '@' not in email:
+            return jsonify({'error': 'Email inválido'}), 400
+        
+        if staff_type not in ['Vendedor', 'Técnico']:
+            return jsonify({'error': 'Tipo de staff deve ser Vendedor ou Técnico'}), 400
+        
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        
+        # Verificar se staff existe
+        cursor.execute("SELECT username FROM staff WHERE id = ?", (staff_id,))
+        old_staff = cursor.fetchone()
+        if not old_staff:
+            conn.close()
+            return jsonify({'error': 'Staff não encontrado'}), 404
+        
+        # Verificar se username/email já existe em outro staff
+        cursor.execute("SELECT id FROM staff WHERE (username = ? OR email = ?) AND id != ?", (username, email, staff_id))
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({'error': 'Usuário ou email já existe'}), 400
+        
+        # Atualizar staff
+        if password:
+            # Atualizar com nova senha
+            password_hash = hash_password(password)
+            cursor.execute("""
+                UPDATE staff 
+                SET username = ?, email = ?, password_hash = ?, staff_type = ?
+                WHERE id = ?
+            """, (username, email, password_hash, staff_type, staff_id))
+        else:
+            # Atualizar sem alterar senha
+            cursor.execute("""
+                UPDATE staff 
+                SET username = ?, email = ?, staff_type = ?
+                WHERE id = ?
+            """, (username, email, staff_type, staff_id))
+        
+        # Log da edição
+        cursor.execute("""
+            INSERT INTO access_logs (username, action, ip_address, details)
+            VALUES (?, ?, ?, ?)
+        """, ('admin', 'staff updated', request.remote_addr, f'Staff {old_staff[0]} editado para {username}'))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'id': staff_id,
+            'username': username,
+            'email': email,
+            'staff_type': staff_type,
+            'message': 'Staff atualizado com sucesso'
+        })
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro interno: {str(e)}'}), 500
+
+@app.route('/api/staff/<int:staff_id>/status', methods=['PUT'])
+def update_staff_status(staff_id):
+    """Ativar/Desativar staff"""
+    try:
+        data = request.get_json()
+        
+        if not data or 'is_active' not in data:
+            return jsonify({'error': 'Campo obrigatório: is_active'}), 400
+        
+        is_active = bool(data['is_active'])
+        
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        
+        # Verificar se staff existe
+        cursor.execute("SELECT username FROM staff WHERE id = ?", (staff_id,))
+        staff = cursor.fetchone()
+        if not staff:
+            conn.close()
+            return jsonify({'error': 'Staff não encontrado'}), 404
+        
+        # Atualizar status
+        cursor.execute("UPDATE staff SET is_active = ? WHERE id = ?", (is_active, staff_id))
+        
+        # Log da ação
+        action = 'staff activated' if is_active else 'staff deactivated'
+        cursor.execute("""
+            INSERT INTO access_logs (username, action, ip_address, details)
+            VALUES (?, ?, ?, ?)
+        """, ('admin', action, request.remote_addr, f'Staff {staff[0]} {action}'))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'message': f'Staff {"ativado" if is_active else "desativado"} com sucesso',
+            'is_active': is_active
+        })
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro interno: {str(e)}'}), 500
+
+@app.route('/api/staff/<int:staff_id>', methods=['DELETE'])
+def delete_staff(staff_id):
+    """Excluir staff"""
+    try:
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        
+        # Verificar se staff existe
+        cursor.execute("SELECT username FROM staff WHERE id = ?", (staff_id,))
+        staff = cursor.fetchone()
+        if not staff:
+            conn.close()
+            return jsonify({'error': 'Staff não encontrado'}), 404
+        
+        # Excluir staff
+        cursor.execute("DELETE FROM staff WHERE id = ?", (staff_id,))
+        
+        # Log da ação
+        cursor.execute("""
+            INSERT INTO access_logs (username, action, ip_address, details)
+            VALUES (?, ?, ?, ?)
+        """, ('admin', 'staff deleted', request.remote_addr, f'Staff {staff[0]} excluído'))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'message': 'Staff excluído com sucesso'})
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro interno: {str(e)}'}), 500
+
+# Logs APIs
+
 @app.route('/api/logs')
 def get_logs():
-    """Logs de acesso com hardware_id"""
-    if not require_admin_login():
-        return jsonify({'error': 'Acesso negado'}), 401
-    
+    """Logs de acesso"""
     try:
-        per_page = request.args.get('per_page', 50, type=int)
+        per_page = request.args.get('per_page', 100, type=int)
         
         conn = sqlite3.connect(DATABASE)
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT username, action, timestamp, ip_address, hardware_id
+            SELECT username, action, timestamp, ip_address, hardware_id, details
             FROM access_logs
             ORDER BY timestamp DESC
             LIMIT ?
@@ -1470,7 +2668,8 @@ def get_logs():
                 'action': row[1],
                 'timestamp': row[2],
                 'ip_address': row[3],
-                'hardware_id': row[4]
+                'hardware_id': row[4],
+                'details': row[5]
             })
         
         conn.close()
@@ -1478,9 +2677,269 @@ def get_logs():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/logs/cleanup', methods=['POST'])
+def cleanup_logs():
+    """Limpar logs antigos (mais de 30 dias)"""
+    try:
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        
+        # Contar logs que serão removidos
+        cursor.execute("""
+            SELECT COUNT(*) FROM access_logs 
+            WHERE timestamp < datetime('now', '-30 days')
+        """)
+        count_to_delete = cursor.fetchone()[0]
+        
+        # Remover logs antigos
+        cursor.execute("""
+            DELETE FROM access_logs 
+            WHERE timestamp < datetime('now', '-30 days')
+        """)
+        
+        # Log da limpeza
+        cursor.execute("""
+            INSERT INTO access_logs (username, action, ip_address, details)
+            VALUES (?, ?, ?, ?)
+        """, ('admin', 'logs cleanup', request.remote_addr, f'{count_to_delete} logs antigos removidos'))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'message': 'Logs antigos removidos com sucesso',
+            'deleted_count': count_to_delete
+        })
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro interno: {str(e)}'}), 500
+
+# Backup APIs
+
+@app.route('/api/backup/create', methods=['POST'])
+def create_backup():
+    """Criar backup do banco de dados"""
+    try:
+        # Criar diretório de backups se não existir
+        backup_dir = 'backups'
+        if not os.path.exists(backup_dir):
+            os.makedirs(backup_dir)
+        
+        # Nome do backup com timestamp (horário Brasil)
+        timestamp = get_brazil_time().strftime('%Y-%m-%d_%H-%M-%S')
+        backup_filename = f'backup_{timestamp}.db'
+        backup_path = os.path.join(backup_dir, backup_filename)
+        
+        # Copiar banco de dados
+        shutil.copy2(DATABASE, backup_path)
+        
+        # Log da criação
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO access_logs (username, action, ip_address, details)
+            VALUES (?, ?, ?, ?)
+        """, ('admin', 'backup created', request.remote_addr, f'Backup {backup_filename} criado'))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'message': 'Backup criado com sucesso',
+            'filename': backup_filename,
+            'path': backup_path
+        })
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro ao criar backup: {str(e)}'}), 500
+
+@app.route('/api/backup/list')
+def list_backups():
+    """Listar backups disponíveis"""
+    try:
+        backup_dir = 'backups'
+        if not os.path.exists(backup_dir):
+            return jsonify({'backups': []})
+        
+        backups = []
+        for filename in os.listdir(backup_dir):
+            if filename.endswith('.db'):
+                filepath = os.path.join(backup_dir, filename)
+                stat = os.stat(filepath)
+                backups.append({
+                    'name': filename,
+                    'size': stat.st_size,
+                    'created_at': datetime.datetime.fromtimestamp(stat.st_mtime).isoformat()
+                })
+        
+        # Ordenar por data de criação (mais recente primeiro)
+        backups.sort(key=lambda x: x['created_at'], reverse=True)
+        
+        return jsonify({'backups': backups})
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro ao listar backups: {str(e)}'}), 500
+
+@app.route('/api/backup/download/<filename>')
+def download_backup(filename):
+    """Download de backup"""
+    try:
+        backup_dir = 'backups'
+        backup_path = os.path.join(backup_dir, filename)
+        
+        if not os.path.exists(backup_path) or not filename.endswith('.db'):
+            return jsonify({'error': 'Backup não encontrado'}), 404
+        
+        # Log do download
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO access_logs (username, action, ip_address, details)
+            VALUES (?, ?, ?, ?)
+        """, ('admin', 'backup downloaded', request.remote_addr, f'Backup {filename} baixado'))
+        conn.commit()
+        conn.close()
+        
+        return send_file(backup_path, as_attachment=True, download_name=filename)
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro ao baixar backup: {str(e)}'}), 500
+
+@app.route('/api/backup/restore', methods=['POST'])
+def restore_backup():
+    """Restaurar backup"""
+    try:
+        data = request.get_json()
+        filename = data.get('filename')
+        
+        if not filename:
+            return jsonify({'error': 'Nome do arquivo é obrigatório'}), 400
+        
+        backup_dir = 'backups'
+        backup_path = os.path.join(backup_dir, filename)
+        
+        if not os.path.exists(backup_path) or not filename.endswith('.db'):
+            return jsonify({'error': 'Backup não encontrado'}), 404
+        
+        # Criar backup do banco atual antes de restaurar
+        current_backup_name = f'backup_before_restore_{get_brazil_time().strftime("%Y-%m-%d_%H-%M-%S")}.db'
+        current_backup_path = os.path.join(backup_dir, current_backup_name)
+        shutil.copy2(DATABASE, current_backup_path)
+        
+        # Restaurar backup
+        shutil.copy2(backup_path, DATABASE)
+        
+        # Log da restauração (no banco restaurado)
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO access_logs (username, action, ip_address, details)
+            VALUES (?, ?, ?, ?)
+        """, ('admin', 'backup restored', request.remote_addr, f'Backup {filename} restaurado'))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'message': 'Backup restaurado com sucesso',
+            'restored_from': filename,
+            'current_backup': current_backup_name
+        })
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro ao restaurar backup: {str(e)}'}), 500
+
+@app.route('/api/backup/upload', methods=['POST'])
+def upload_backup():
+    """Upload e restauração de backup"""
+    try:
+        if 'backup' not in request.files:
+            return jsonify({'error': 'Nenhum arquivo enviado'}), 400
+        
+        file = request.files['backup']
+        if file.filename == '':
+            return jsonify({'error': 'Nenhum arquivo selecionado'}), 400
+        
+        if not file.filename.endswith('.db'):
+            return jsonify({'error': 'Arquivo deve ter extensão .db'}), 400
+        
+        # Salvar arquivo temporariamente
+        temp_dir = tempfile.gettempdir()
+        temp_path = os.path.join(temp_dir, secure_filename(file.filename))
+        file.save(temp_path)
+        
+        try:
+            # Verificar se é um banco SQLite válido
+            test_conn = sqlite3.connect(temp_path)
+            test_conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
+            test_conn.close()
+        except:
+            os.remove(temp_path)
+            return jsonify({'error': 'Arquivo não é um banco SQLite válido'}), 400
+        
+        # Criar backup do banco atual
+        backup_dir = 'backups'
+        if not os.path.exists(backup_dir):
+            os.makedirs(backup_dir)
+        
+        current_backup_name = f'backup_before_upload_{get_brazil_time().strftime("%Y-%m-%d_%H-%M-%S")}.db'
+        current_backup_path = os.path.join(backup_dir, current_backup_name)
+        shutil.copy2(DATABASE, current_backup_path)
+        
+        # Restaurar backup enviado
+        shutil.copy2(temp_path, DATABASE)
+        os.remove(temp_path)
+        
+        # Log da restauração
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO access_logs (username, action, ip_address, details)
+            VALUES (?, ?, ?, ?)
+        """, ('admin', 'backup uploaded', request.remote_addr, f'Backup {file.filename} enviado e restaurado'))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'message': 'Backup enviado e restaurado com sucesso',
+            'uploaded_file': file.filename,
+            'current_backup': current_backup_name
+        })
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro ao enviar backup: {str(e)}'}), 500
+
+@app.route('/api/backup/delete/<filename>', methods=['DELETE'])
+def delete_backup(filename):
+    """Excluir backup"""
+    try:
+        backup_dir = 'backups'
+        backup_path = os.path.join(backup_dir, filename)
+        
+        if not os.path.exists(backup_path) or not filename.endswith('.db'):
+            return jsonify({'error': 'Backup não encontrado'}), 404
+        
+        # Remover arquivo
+        os.remove(backup_path)
+        
+        # Log da exclusão
+        conn = sqlite3.connect(DATABASE)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO access_logs (username, action, ip_address, details)
+            VALUES (?, ?, ?, ?)
+        """, ('admin', 'backup deleted', request.remote_addr, f'Backup {filename} excluído'))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'message': 'Backup excluído com sucesso'})
+        
+    except Exception as e:
+        return jsonify({'error': f'Erro ao excluir backup: {str(e)}'}), 500
+
+# API de autenticação original (para o SpiderPrint)
+
 @app.route('/api/auth/login', methods=['POST'])
 def login():
-    """Autenticação de usuário"""
+    """Autenticação de usuário para o SpiderPrint"""
     try:
         data = request.get_json()
         username = data.get('username')
@@ -1495,7 +2954,8 @@ def login():
         
         # Buscar usuário
         cursor.execute("""
-            SELECT id, username, password_hash, expires_at, is_active, access_level
+            SELECT id, username, password_hash, expires_at, is_active, access_level, 
+                   license_type, user_type, hardware_id
             FROM users
             WHERE username = ?
         """, (username,))
@@ -1515,35 +2975,57 @@ def login():
             conn.close()
             return jsonify({'error': 'Usuário desativado'}), 401
         
-        # Verificar expiração
-        if user[3]:  # Se tem data de expiração
-            expires_at = datetime.datetime.fromisoformat(user[3])
-            if expires_at < datetime.datetime.now():
+        # Verificar se é admin especial (sem limitações)
+        is_admin_special = user[5] == 'Admin' or user[6] == 'Admin' or user[7] == 'Admin'
+        
+        if not is_admin_special:
+            # Verificar expiração (apenas para não-admins)
+            if user[3]:  # Se tem data de expiração
+                expires_at = datetime.datetime.fromisoformat(user[3])
+                if expires_at < get_brazil_time():
+                    conn.close()
+                    return jsonify({'error': 'Licença expirada'}), 401
+            
+            # Verificar hardware ID (apenas para não-admins)
+            if user[8] and user[8] != hardware_id:
                 conn.close()
-                return jsonify({'error': 'Licença expirada'}), 401
+                return jsonify({'error': 'Hardware não autorizado'}), 401
         
-        # Atualizar último login e hardware_id
-        cursor.execute("""
-            UPDATE users 
-            SET last_login = datetime('now'), hardware_id = ?
-            WHERE id = ?
-        """, (hardware_id, user[0]))
+        # Atualizar último login e hardware_id (se não for admin especial)
+        if not is_admin_special:
+            cursor.execute("""
+                UPDATE users 
+                SET last_login = ?, hardware_id = ?
+                WHERE id = ?
+            """, (get_brazil_time().isoformat(), hardware_id, user[0]))
+        else:
+            cursor.execute("""
+                UPDATE users 
+                SET last_login = ?
+                WHERE id = ?
+            """, (get_brazil_time().isoformat(), user[0]))
         
-        # Log de acesso com hardware_id
+        # Log de acesso
         cursor.execute("""
-            INSERT INTO access_logs (username, action, ip_address, hardware_id)
-            VALUES (?, 'login', ?, ?)
-        """, (username, request.remote_addr, hardware_id))
+            INSERT INTO access_logs (username, action, ip_address, hardware_id, details)
+            VALUES (?, ?, ?, ?, ?)
+        """, (username, 'login', request.remote_addr, hardware_id, 
+              f'Login via SpiderPrint - Nível: {user[5]}'))
         
         conn.commit()
         conn.close()
+        
+        # Determinar nível de acesso
+        access_level = user[5] or 'Básico'
         
         return jsonify({
             'success': True,
             'message': 'Login realizado com sucesso',
             'username': username,
+            'access_level': access_level,
+            'license_type': user[6],
             'expires_at': user[3],
-            'access_level': user[5] or 'Básico'
+            'is_admin_special': is_admin_special
         })
         
     except Exception as e:
@@ -1557,9 +3039,13 @@ if __name__ == '__main__':
         print("Banco de dados resetado!")
     
     init_db()
-    print("SpiderPrint Auth Server iniciado!")
-    print(f"Dashboard: http://localhost:5000")
-    print(f"Admin Login: {ADMIN_USERNAME} / {ADMIN_PASSWORD}")
+    create_admin_if_not_exists()
+    
+    print("🕷️ SpiderPrint Enhanced Server iniciado!")
+    print(f"📊 Dashboard: http://localhost:5000")
+    print(f"👤 Admin: {ADMIN_USERNAME}")
+    print(f"🔑 Senha: {ADMIN_PASSWORD}")
+    print("🇧🇷 Fuso horário: Brasil (UTC-3)")
     
     # Configuração para produção
     port = int(os.environ.get('PORT', 5000))
