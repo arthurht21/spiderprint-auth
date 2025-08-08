@@ -897,6 +897,87 @@ def dashboard():
                     </div>
                 </div>
             </div>
+            
+            <!-- Staff Interface Tab (Hidden, only shown for staff) -->
+            <div id="staff-interface" class="tab-content" style="display: none;">
+                <div class="stats-grid" style="margin-bottom: 30px;">
+                    <div class="stat-card">
+                        <div class="stat-number" id="staffTotalUsers">0</div>
+                        <div class="stat-label">Meus Usuários</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="staffActiveUsers">0</div>
+                        <div class="stat-label">Ativos</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number" id="staffTrialUsers">0</div>
+                        <div class="stat-label">Trial</div>
+                    </div>
+                </div>
+                
+                <!-- Criar Usuário Trial -->
+                <div class="backup-section" style="margin-bottom: 30px;">
+                    <h3>🎯 Criar Usuário Trial</h3>
+                    <form id="staffTrialForm" style="max-width: 500px;">
+                        <div class="form-group">
+                            <label>👤 Nome de Usuário:</label>
+                            <input type="text" id="staffUsername" required minlength="3">
+                        </div>
+                        <div class="form-group">
+                            <label>📧 Email:</label>
+                            <input type="email" id="staffEmail" required>
+                        </div>
+                        <div class="form-group">
+                            <label>🔑 Senha:</label>
+                            <input type="password" id="staffPassword" required minlength="6">
+                        </div>
+                        <div class="form-group">
+                            <label>⏰ Duração do Trial:</label>
+                            <div style="margin-top: 10px;">
+                                <label style="display: block; margin-bottom: 10px;">
+                                    <input type="radio" name="trialDuration" value="1" checked> 
+                                    📅 1 Dia (24 horas)
+                                </label>
+                                <label style="display: block;">
+                                    <input type="radio" name="trialDuration" value="3"> 
+                                    📅 3 Dias (72 horas)
+                                </label>
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-success">🚀 Criar Usuário Trial</button>
+                    </form>
+                </div>
+                
+                <!-- Lista de Usuários do Staff -->
+                <div class="table-container">
+                    <div class="table-header">
+                        <h3>👥 Meus Usuários</h3>
+                        <button class="btn btn-info btn-sm" onclick="refreshStaffUsers()">🔄 Atualizar</button>
+                    </div>
+                    <div style="padding: 15px;">
+                        <div class="search-filter">
+                            <input type="text" class="search-input" id="staffUserSearch" placeholder="🔍 Buscar meus usuários..." onkeyup="filterStaffUsers()">
+                        </div>
+                        <div style="overflow-x: auto;">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>👤 Usuário</th>
+                                        <th>📧 Email</th>
+                                        <th>⏰ Expira</th>
+                                        <th>📊 Status</th>
+                                        <th>🔧 Hardware</th>
+                                        <th>📅 Criado</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="staffUsersTableBody">
+                                    <!-- Usuários do staff serão carregados aqui -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
     
@@ -1102,35 +1183,27 @@ def dashboard():
             const canEditUsers = isAdmin || currentPermissions.includes('users_edit');
             const canViewLogs = isAdmin || currentPermissions.includes('logs_view');
             
-            // Controlar visibilidade das abas
-            const tabButtons = document.querySelectorAll('.tab-button');
-            tabButtons.forEach(button => {
-                const tabName = button.textContent.toLowerCase();
-                
-                if (tabName.includes('staff') && !isAdmin) {
-                    button.style.display = 'none';
-                } else if (tabName.includes('backup') && !isAdmin) {
-                    button.style.display = 'none';
-                } else if (tabName.includes('configurações') && !isAdmin) {
-                    button.style.display = 'none';
-                } else if (tabName.includes('logs') && !canViewLogs) {
-                    button.style.display = 'none';
-                } else if (tabName.includes('usuários') && !canViewUsers) {
-                    button.style.display = 'none';
-                } else {
+            if (isAdmin) {
+                // Admin vê todas as abas normalmente
+                const tabButtons = document.querySelectorAll('.tab-button');
+                tabButtons.forEach(button => {
                     button.style.display = 'block';
+                });
+                
+                // Controlar botão Novo Usuário
+                const newUserBtn = document.getElementById('newUserBtn');
+                if (newUserBtn) {
+                    newUserBtn.style.display = 'block';
                 }
-            });
-            
-            // Controlar botão Novo Usuário
-            const newUserBtn = document.getElementById('newUserBtn');
-            if (newUserBtn) {
-                newUserBtn.style.display = canCreateUsers ? 'block' : 'none';
-            }
-            
-            // Se não é admin, mostrar aba usuários por padrão
-            if (!isAdmin && canViewUsers) {
-                showTab('users');
+            } else {
+                // Staff vê apenas uma aba específica
+                const tabButtons = document.querySelectorAll('.tab-button');
+                tabButtons.forEach(button => {
+                    button.style.display = 'none'; // Esconder todas as abas
+                });
+                
+                // Mostrar apenas aba específica do staff
+                showStaffInterface();
             }
         }
         
@@ -1138,6 +1211,162 @@ def dashboard():
         function hasPermission(permission) {
             return currentPermissions.includes('all') || currentPermissions.includes(permission);
         }
+        
+        // Interface específica para staff
+        function showStaffInterface() {
+            // Esconder todas as abas
+            const tabs = document.querySelectorAll('.tab-content');
+            tabs.forEach(tab => tab.classList.remove('active'));
+            
+            // Mostrar aba do staff
+            document.getElementById('staff-interface').classList.add('active');
+            document.getElementById('staff-interface').style.display = 'block';
+            
+            // Carregar dados do staff
+            loadStaffData();
+        }
+        
+        // Carregar dados específicos do staff
+        function loadStaffData() {
+            loadStaffUsers();
+            loadStaffStats();
+        }
+        
+        // Carregar usuários do staff
+        function loadStaffUsers() {
+            const url = `/api/users?created_by=${encodeURIComponent(currentUser)}`;
+            
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    usersData = data;
+                    renderStaffUsers(data);
+                })
+                .catch(error => console.error('Erro ao carregar usuários do staff:', error));
+        }
+        
+        // Renderizar usuários do staff
+        function renderStaffUsers(users) {
+            const tbody = document.getElementById('staffUsersTableBody');
+            if (!users || users.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #666;">Nenhum usuário criado ainda</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = users.map(user => {
+                const isExpired = user.expires_at && new Date(user.expires_at) < new Date();
+                const statusClass = !user.is_active ? 'status-inactive' : (isExpired ? 'status-expired' : 'status-active');
+                const statusText = !user.is_active ? 'Inativo' : (isExpired ? 'Expirado' : 'Ativo');
+                
+                const hardwareDisplay = user.hardware_id ? 
+                    `<div class="hardware-id">${user.hardware_id.substring(0, 12)}...</div>` : 
+                    '<span style="color: #999;">Não vinculado</span>';
+                
+                const expiresDisplay = user.expires_at ? 
+                    new Date(user.expires_at).toLocaleDateString('pt-BR') : 
+                    '<span style="color: #28a745;">Nunca</span>';
+                
+                const createdDisplay = user.created_at ? 
+                    new Date(user.created_at).toLocaleDateString('pt-BR') : 
+                    'N/A';
+                
+                return `
+                    <tr>
+                        <td><strong>${user.username}</strong></td>
+                        <td>${user.email}</td>
+                        <td>${expiresDisplay}</td>
+                        <td><span class="${statusClass}">${statusText}</span></td>
+                        <td>${hardwareDisplay}</td>
+                        <td>${createdDisplay}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+        
+        // Carregar estatísticas do staff
+        function loadStaffStats() {
+            const url = `/api/users?created_by=${encodeURIComponent(currentUser)}`;
+            
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    const total = data.length;
+                    const active = data.filter(u => u.is_active && (!u.expires_at || new Date(u.expires_at) > new Date())).length;
+                    const trial = data.filter(u => u.license_type === 'Trial').length;
+                    
+                    document.getElementById('staffTotalUsers').textContent = total;
+                    document.getElementById('staffActiveUsers').textContent = active;
+                    document.getElementById('staffTrialUsers').textContent = trial;
+                })
+                .catch(error => console.error('Erro ao carregar estatísticas do staff:', error));
+        }
+        
+        // Filtrar usuários do staff
+        function filterStaffUsers() {
+            const search = document.getElementById('staffUserSearch').value.toLowerCase();
+            
+            let filtered = usersData.filter(user => {
+                return user.username.toLowerCase().includes(search) || 
+                       user.email.toLowerCase().includes(search);
+            });
+            
+            renderStaffUsers(filtered);
+        }
+        
+        // Atualizar usuários do staff
+        function refreshStaffUsers() {
+            loadStaffData();
+        }
+        
+        // Formulário de criação de trial do staff
+        document.addEventListener('DOMContentLoaded', function() {
+            const staffTrialForm = document.getElementById('staffTrialForm');
+            if (staffTrialForm) {
+                staffTrialForm.addEventListener('submit', function(e) {
+                    e.preventDefault();
+                    
+                    const username = document.getElementById('staffUsername').value.trim();
+                    const email = document.getElementById('staffEmail').value.trim();
+                    const password = document.getElementById('staffPassword').value;
+                    const duration = parseInt(document.querySelector('input[name="trialDuration"]:checked').value);
+                    
+                    const userData = {
+                        username: username,
+                        email: email,
+                        password: password,
+                        access_level: 'Básico',
+                        license_type: 'Trial',
+                        duration: duration,
+                        created_by: currentUser
+                    };
+                    
+                    fetch('/api/users', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(userData)
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.error) {
+                            alert('Erro: ' + data.error);
+                        } else {
+                            alert('Usuário trial criado com sucesso!');
+                            document.getElementById('staffTrialForm').reset();
+                            // Marcar 1 dia como padrão novamente
+                            document.querySelector('input[name="trialDuration"][value="1"]').checked = true;
+                            // Atualizar dados
+                            loadStaffData();
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Erro:', error);
+                        alert('Erro ao criar usuário trial');
+                    });
+                });
+            }
+        });
         
         // Tabs
         function showTab(tabName) {
